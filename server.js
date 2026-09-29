@@ -15,37 +15,55 @@ app.post('/api/consultar', async (req, res) => {
 
   let browser;
   try {
-    // Inicia o Chrome em segundo plano no servidor
+    console.log('Iniciando o navegador Chromium...');
     browser = await puppeteer.launch({
       headless: true,
       args: ['--no-sandbox', '--disable-setuid-sandbox']
     });
 
     const page = await browser.newPage();
+    
+    // Define um User-Agent real de navegador desktop
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
 
-    // 1. Entra na Sala do Futuro
+    console.log('Acessando a página da Sala do Futuro...');
     await page.goto('https://saladofuturo.educacao.sp.gov.br/login-alunos', {
-      waitUntil: 'networkidle2'
+      waitUntil: 'networkidle2',
+      timeout: 60000
     });
 
-    // 2. Preenche o Login
-    await page.type('input[placeholder*="186735683"]', ra);
-    await page.type('input[placeholder="0"]', digito || '0');
-    await page.type('input[type="password"]', senha);
+    console.log('Aguardando os campos de login carregarem...');
+    await page.waitForSelector('input', { timeout: 15000 });
 
-    // 3. Clica em Acessar
-    await Promise.all([
-      page.click('button:has-text("Acessar")'),
-      page.waitForNavigation({ waitUntil: 'networkidle2' })
-    ]);
+    // Preenche os campos
+    const inputs = await page.$$('input');
+    if (inputs.length >= 2) {
+      console.log('Preenchendo credenciais...');
+      await inputs[0].type(ra + (digito || ''));
+      await inputs[inputs.length - 1].type(senha);
+    } else {
+      throw new Error('Campos de login não foram localizados na página.');
+    }
 
-    // Exemplo de estrutura para raspar tarefas do painel
+    // Procura e clica no botão de submissão
+    console.log('Clicando no botão de login...');
+    const submitBtn = await page.$('button[type="submit"], button');
+    if (submitBtn) {
+      await Promise.all([
+        submitBtn.click(),
+        page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {})
+      ]);
+    }
+
+    console.log('Página após login carregada. Extraindo informações...');
+    
+    // Tenta capturar elementos de tarefas ou mensagem do portal
     const tarefas = await page.evaluate(() => {
-      const items = document.querySelectorAll('.card-tarefa, .atividade-item');
+      const items = document.querySelectorAll('.card-tarefa, .atividade-item, div[class*="tarefa"]');
       return Array.from(items).map(item => ({
         plataforma: 'Sala do Futuro',
-        titulo: item.querySelector('.titulo')?.innerText || 'Atividade',
-        prazo: item.querySelector('.data')?.innerText || 'Sem prazo'
+        titulo: item.querySelector('h3, .titulo, span')?.innerText || 'Atividade sem título',
+        prazo: item.querySelector('.data, .prazo')?.innerText || 'Sem prazo'
       }));
     });
 
@@ -54,8 +72,8 @@ app.post('/api/consultar', async (req, res) => {
 
   } catch (error) {
     if (browser) await browser.close();
-    console.error(error);
-    return res.status(500).json({ erro: 'Erro ao processar login ou extrair dados.' });
+    console.error('ERRO DETALHADO NO PUPPETEER:', error.message);
+    return res.status(500).json({ erro: `Falha ao processar: ${error.message}` });
   }
 });
 
