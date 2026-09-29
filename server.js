@@ -15,38 +15,29 @@ app.post('/api/consultar', async (req, res) => {
 
   let browser;
   try {
-    console.log('Iniciando o navegador Chromium...');
+    console.log('Iniciando Chromium...');
     browser = await puppeteer.launch({
       headless: true,
       args: ['--no-sandbox', '--disable-setuid-sandbox']
     });
 
     const page = await browser.newPage();
-    
-    // Define um User-Agent real de navegador desktop
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
 
-    console.log('Acessando a página da Sala do Futuro...');
+    console.log('Acessando Sala do Futuro...');
     await page.goto('https://saladofuturo.educacao.sp.gov.br/login-alunos', {
       waitUntil: 'networkidle2',
       timeout: 60000
     });
 
-    console.log('Aguardando os campos de login carregarem...');
+    // Preenche login
     await page.waitForSelector('input', { timeout: 15000 });
-
-    // Preenche os campos
     const inputs = await page.$$('input');
     if (inputs.length >= 2) {
-      console.log('Preenchendo credenciais...');
       await inputs[0].type(ra + (digito || ''));
       await inputs[inputs.length - 1].type(senha);
-    } else {
-      throw new Error('Campos de login não foram localizados na página.');
     }
 
-    // Procura e clica no botão de submissão
-    console.log('Clicando no botão de login...');
     const submitBtn = await page.$('button[type="submit"], button');
     if (submitBtn) {
       await Promise.all([
@@ -55,28 +46,53 @@ app.post('/api/consultar', async (req, res) => {
       ]);
     }
 
-    console.log('Página após login carregada. Extraindo informações...');
-    
-    // Tenta capturar elementos de tarefas ou mensagem do portal
-    const tarefas = await page.evaluate(() => {
-      const items = document.querySelectorAll('.card-tarefa, .atividade-item, div[class*="tarefa"]');
-      return Array.from(items).map(item => ({
-        plataforma: 'Sala do Futuro',
-        titulo: item.querySelector('h3, .titulo, span')?.innerText || 'Atividade sem título',
-        prazo: item.querySelector('.data, .prazo')?.innerText || 'Sem prazo'
+    console.log('Extraindo informações do aluno e resumo...');
+    await page.waitForTimeout(3000);
+
+    // Extrai dados da dashboard
+    const dadosDashboard = await page.evaluate(() => {
+      // Tenta extrair o nome do aluno da página
+      const elementoNome = document.querySelector('.nome-aluno, .user-name, [class*="aluno"], [class*="user"], h2, h3');
+      const nomeCompleto = elementoNome ? elementoNome.innerText.trim() : 'ALUNO';
+
+      // Tenta extrair a série / escola
+      const elementoInfo = document.querySelector('.info-turma, .subtitulo, [class*="turma"], [class*="escola"]');
+      const turmaInfo = elementoInfo ? elementoInfo.innerText.trim() : 'SEDUC-SP';
+
+      // Conta o total de atividades pendentes
+      const cardsTarefas = document.querySelectorAll('.card-tarefa, .atividade-item, [class*="tarefa"]');
+      const totalPendencias = cardsTarefas.length;
+
+      // Lista detalhada dos itens
+      const tarefas = Array.from(cardsTarefas).map(item => ({
+        plataforma: item.innerText.toLowerCase().includes('khan') ? 'Khan Academy' : 'Tarefas SP',
+        titulo: item.querySelector('h3, h4, .titulo, span')?.innerText || 'Atividade Pendente',
+        prazo: item.querySelector('.data, .prazo, time')?.innerText || 'Pendente'
       }));
+
+      return {
+        aluno: {
+          nome: nomeCompleto,
+          turma: turmaInfo
+        },
+        resumo: {
+          pendencias: totalPendencias,
+          faltas: '—'
+        },
+        tarefas: tarefas
+      };
     });
 
     await browser.close();
-    return res.json({ sucesso: true, tarefas });
+    return res.json({ sucesso: true, ...dadosDashboard });
 
   } catch (error) {
     if (browser) await browser.close();
-    console.error('ERRO DETALHADO NO PUPPETEER:', error.message);
+    console.error('ERRO:', error.message);
     return res.status(500).json({ erro: `Falha ao processar: ${error.message}` });
   }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
-
+          
