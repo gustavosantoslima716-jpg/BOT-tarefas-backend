@@ -8,8 +8,15 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Lê a chave guardada nas variáveis de ambiente do Render
-const apiKey = process.env.GEMINI_API_KEY;
+// Recupera a chave e garante que não seja enviada vazia
+const apiKey = process.env.GEMINI_API_KEY || '';
+
+if (!apiKey) {
+  console.error('AVISO CRÍTICO: A variável GEMINI_API_KEY não foi encontrada no ambiente!');
+} else {
+  console.log('Chave GEMINI_API_KEY carregada com sucesso.');
+}
+
 const genAI = new GoogleGenerativeAI(apiKey);
 
 app.post('/api/consultar', async (req, res) => {
@@ -21,7 +28,7 @@ app.post('/api/consultar', async (req, res) => {
 
   let browser;
   try {
-    console.log('1. A iniciar o Chromium...');
+    console.log('1. Iniciando Chromium...');
     
     browser = await puppeteer.launch({
       args: chromium.args,
@@ -35,7 +42,7 @@ app.post('/api/consultar', async (req, res) => {
     await page.setViewport({ width: 1366, height: 768 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
 
-    console.log('2. A aceder ao portal...');
+    console.log('2. Acessando portal...');
     await page.goto('https://saladofuturo.educacao.sp.gov.br/login-alunos', {
       waitUntil: 'networkidle2',
       timeout: 60000
@@ -57,16 +64,16 @@ app.post('/api/consultar', async (req, res) => {
       ]);
     }
 
-    console.log('3. A aguardar carregamento do painel...');
+    console.log('3. Aguardando carregamento do painel...');
     await new Promise(resolve => setTimeout(resolve, 6000));
 
     // Captura screenshot em base64
-    console.log('4. A tirar screenshot do painel...');
+    console.log('4. Tirando screenshot do painel...');
     const screenshotBuffer = await page.screenshot({ encoding: 'base64', fullPage: false });
     await browser.close();
 
     // Processamento com a API do Gemini
-    console.log('5. A analisar dados com Gemini AI...');
+    console.log('5. Analisando dados com Gemini AI...');
     const model = genAI.getGenerativeModel({ 
       model: 'gemini-1.5-flash',
       generationConfig: { responseMimeType: 'application/json' }
