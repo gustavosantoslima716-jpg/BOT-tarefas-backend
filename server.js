@@ -38,38 +38,40 @@ app.post('/api/consultar', async (req, res) => {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     );
 
-    // Escuta as requisições de API no background para garantir captura total dos dados de rede
+    // Escuta e captura a API exata descoberta na inspeção de rede
     page.on('response', async (response) => {
       const url = response.url();
-      if (url.includes('tarefa') || url.includes('todo') || url.includes('api') || url.includes('list')) {
+      if (url.includes('/api/activities/todo') || url.includes('/api/activities') || url.includes('type=NormalTask')) {
         try {
           const json = await response.json();
-          const items = json.data || json.items || (Array.isArray(json) ? json : []);
-          if (Array.isArray(items)) {
-            items.forEach((item, index) => {
-              if (item.title || item.nome || item.descricao) {
-                tarefasInterceptadas.push({
-                  id: String(item.id || `item_${Date.now()}_${index}`),
-                  plataforma: item.discipline_name || item.componente || item.categoria || 'Tarefa SP',
-                  titulo: item.title || item.nome || item.descricao,
-                  descricao: item.description || item.aprendizagem || '',
-                  prazo: item.due_date || item.data_limite || (item.expired ? 'Expirado' : 'Pendente'),
-                  linkAcao: item.link || item.url || 'https://salvaestudante.com/tarefas'
-                });
-              }
+          console.log('-> API de Tarefas Interceptada com Sucesso!');
+
+          const lista = Array.isArray(json) ? json : (json.data || json.items || json.activities || []);
+
+          if (Array.isArray(lista)) {
+            lista.forEach((item, index) => {
+              tarefasInterceptadas.push({
+                id: String(item.id || `task_${index}`),
+                plataforma: item.discipline_name || item.component_name || item.subject || 'Tarefa SP',
+                titulo: item.title || item.name || item.description || 'Tarefa sem título',
+                descricao: item.learning_goals || item.description || '',
+                prazo: item.due_date || (item.expired ? 'Expirado' : 'Vence hoje'),
+                linkAcao: item.url || item.link || 'https://salvaestudante.com/tarefas'
+              });
             });
           }
-        } catch (e) {}
+        } catch (e) {
+          console.error('Erro ao ler JSON da resposta:', e.message);
+        }
       }
     });
 
     console.log('2. Acessando salvaestudante.com para Login...');
     await page.goto('https://salvaestudante.com', { waitUntil: 'networkidle2', timeout: 30000 });
 
-    // Se houver tela de login, faz a autenticação com as credenciais fornecidas
     const temInputs = await page.$('input');
     if (temInputs) {
-      console.log('3. Realizando login...');
+      console.log('3. Preenchendo credenciais...');
       await page.evaluate(({ raVal, digitoVal, ufVal, senhaVal }) => {
         const inputs = Array.from(document.querySelectorAll('input'));
         const inputRA = inputs.find(i => i.placeholder && i.placeholder.includes('0000')) || inputs[0];
@@ -96,7 +98,7 @@ app.post('/api/consultar', async (req, res) => {
         }
       }, { raVal: ra, digitoVal: digito, ufVal: uf || 'SP', senhaVal: senha });
 
-      // Clica em Acessar
+      console.log('4. Clicando em Acessar...');
       await page.evaluate(() => {
         const botoes = Array.from(document.querySelectorAll('button'));
         const btn = botoes.find(b => b.innerText && b.innerText.trim().toLowerCase().includes('acessar'));
@@ -107,42 +109,11 @@ app.post('/api/consultar', async (req, res) => {
       await new Promise(r => setTimeout(r, 2000));
     }
 
-    console.log('4. Navegando para /tarefas...');
+    console.log('5. Indo diretamente para /tarefas para disparar a API...');
     await page.goto('https://salvaestudante.com/tarefas', { waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {});
     await new Promise(r => setTimeout(r, 3000));
 
-    console.log('5. Extraindo todos os elementos visuais do DOM...');
-    const tarefasDOM = await page.evaluate(() => {
-      const cards = Array.from(document.querySelectorAll('[class*="card"], div[style*="border"], div[style*="background"]'));
-      const lista = [];
-
-      cards.forEach((card, idx) => {
-        const textoCard = card.innerText || '';
-        // Só considera blocos que pareçam uma tarefa (possuem palavra "Tarefa" ou botão "Fazer tarefa")
-        if (textoCard.includes('Tarefa') || textoCard.includes('Fazer') || textoCard.includes('Vence') || textoCard.includes('Expirado')) {
-          const tituloEl = card.querySelector('h3, h4, strong, [class*="titulo"]') || card;
-          const prazoEl = card.querySelector('[class*="status"], [class*="badge"], [class*="vence"], [class*="expirado"]');
-          const botaoEl = card.querySelector('button, a');
-
-          const tituloText = tituloEl ? tituloEl.innerText.split('\n')[0] : `Tarefa ${idx + 1}`;
-          
-          if (tituloText && tituloText.trim().length > 3) {
-            lista.push({
-              id: `dom_${idx}_${Date.now()}`,
-              plataforma: 'Tarefa SP',
-              titulo: tituloText.trim(),
-              descricao: card.querySelector('p')?.innerText || '',
-              prazo: prazoEl ? prazoEl.innerText.trim() : (textoCard.includes('Expirado') ? 'Expirado' : 'Vence hoje'),
-              linkAcao: botaoEl ? (botaoEl.href || 'fazer_tarefa') : 'fazer_tarefa'
-            });
-          }
-        }
-      });
-
-      return lista;
-    });
-
-    // Dados do aluno capturados do cabeçalho
+    // Captura dados do perfil do aluno no cabeçalho
     const perfilAluno = await page.evaluate(() => {
       const body = document.body.innerText;
       const matchNome = body.match(/Olá,\s*([^\n]+)/i);
@@ -160,10 +131,9 @@ app.post('/api/consultar', async (req, res) => {
 
     await browser.close();
 
-    // Consolida e remove duplicatas
-    const todasTarefas = [...tarefasDOM, ...tarefasInterceptadas];
-    const tarefasUnicas = Array.from(new Set(todasTarefas.map(t => t.titulo)))
-      .map(titulo => todasTarefas.find(t => t.titulo === titulo));
+    // Filtra tarefas duplicadas pelo título
+    const tarefasUnicas = Array.from(new Set(tarefasInterceptadas.map(t => t.titulo)))
+      .map(titulo => tarefasInterceptadas.find(t => t.titulo === titulo));
 
     return res.json({
       sucesso: true,
@@ -180,7 +150,7 @@ app.post('/api/consultar', async (req, res) => {
           id: "0",
           plataforma: "Tarefa SP",
           titulo: "Nenhuma atividade pendente encontrada!",
-          descricao: "Todas as suas tarefas foram concluídas.",
+          descricao: "Todas as tarefas foram concluídas.",
           prazo: "Tudo em dia",
           linkAcao: "#"
         }
@@ -189,8 +159,8 @@ app.post('/api/consultar', async (req, res) => {
 
   } catch (error) {
     if (browser) await browser.close();
-    console.error('Erro na extração:', error);
-    return res.status(500).json({ erro: `Falha na consulta: ${error.message}` });
+    console.error('Erro:', error.message);
+    return res.status(500).json({ erro: `Falha ao consultar: ${error.message}` });
   }
 });
 
