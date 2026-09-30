@@ -1,7 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import puppeteer from 'puppeteer-core';
-import chromium from '@sparticuz/chromium';
+import axios from 'axios';
 
 const app = express();
 app.use(cors());
@@ -14,148 +13,73 @@ app.post('/api/consultar', async (req, res) => {
     return res.status(400).json({ erro: 'RA e senha são obrigatórios.' });
   }
 
-  let browser = null;
-  const tarefasInterceptadas = [];
-
   try {
-    console.log('1. Iniciando navegador...');
-    browser = await puppeteer.launch({
-      args: [
-        ...chromium.args,
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-blink-features=AutomationControlled'
-      ],
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
-      headless: chromium.headless,
-      ignoreHTTPSErrors: true,
-    });
+    console.log('1. Autenticando na API do SalvaEstudante/CMS...');
+    
+    // 1. Tenta realizar o login direto na API para obter o token/sessão
+    const loginResponse = await axios.post('https://salvaestudante.com/api/auth/login', {
+      ra: ra,
+      digito: digito || '0',
+      uf: (uf || 'SP').toUpperCase(),
+      senha: senha
+    }, {
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      },
+      timeout: 10000
+    }).catch(err => err.response || null);
 
-    const page = await browser.newPage();
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-    );
+    // Se o login direto por API retornar o token ou cookie:
+    let authToken = loginResponse?.data?.token || loginResponse?.data?.accessToken || loginResponse?.headers['authorization'];
+    let cookies = loginResponse?.headers['set-cookie'] ? loginResponse.headers['set-cookie'].join('; ') : '';
 
-    // Intercepta as respostas de rede (equivalente a olhar a aba Response no DevTools)
-    page.on('response', async (response) => {
-      const url = response.url();
-      // Filtra chamadas de API de tarefas (ex: edusp, tasks, activities)
-      if (
-        url.includes('/api/activities') || 
-        url.includes('/todo') || 
-        url.includes('tasks') || 
-        url.includes('tarefa') || 
-        url.includes('edusp')
-      ) {
-        try {
-          const json = await response.json();
-          const items = Array.isArray(json) ? json : (json.data || json.items || json.activities || []);
+    console.log('2. Buscando lista de tarefas da API...');
 
-          if (Array.isArray(items)) {
-            items.forEach((item) => {
-              // Pega exatamente os campos do JSON que você mostrou na aba Responses
-              const tituloReal = item.title || item.nome || item.name;
+    // 2. Faz a chamada direta no endpoint de atividades/tarefas da plataforma
+    const tarefasResponse = await axios.get('https://salvaestudante.com/api/activities/todo', {
+      headers: {
+        'Authorization': authToken ? `Bearer ${authToken}` : '',
+        'Cookie': cookies,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      },
+      timeout: 10000
+    }).catch(err => err.response || null);
 
-              if (tituloReal && !tarefasInterceptadas.some(t => t.id === String(item.id))) {
-                tarefasInterceptadas.push({
-                  id: String(item.id),
-                  plataforma: item.realm ? item.realm.toUpperCase() : 'Tarefa SP',
-                  titulo: tituloReal.trim(),
-                  descricao: item.description || item.learning_goals || '',
-                  prazo: item.task_expired ? 'Expirado' : 'A Fazer',
-                  linkAcao: 'https://salvaestudante.com/tarefas'
-                });
-              }
-            });
-          }
-        } catch (e) {
-          // Ignora respostas que não forem JSON válido
-        }
-      }
-    });
+    const data = tarefasResponse?.data;
+    const items = Array.isArray(data) ? data : (data?.data || data?.items || data?.activities || []);
 
-    console.log('2. Acessando salvaestudante.com para Login...');
-    await page.goto('https://salvaestudante.com', { waitUntil: 'networkidle2', timeout: 30000 });
+    if (items && items.length > 0) {
+      const tarefasMapeadas = items.map((item, index) => ({
+        id: String(item.id || index + 1),
+        plataforma: item.realm ? item.realm.toUpperCase() : 'Tarefa SP',
+        titulo: (item.title || item.nome || item.name || 'Tarefa sem título').trim(),
+        descricao: item.description || item.learning_goals || 'Sem descrição cadastrada.',
+        prazo: item.task_expired ? 'Expirado' : 'A Fazer',
+        linkAcao: 'https://salvaestudante.com/tarefas'
+      }));
 
-    const temInputs = await page.$('input');
-    if (temInputs) {
-      console.log('3. Preenchendo credenciais...');
-      await page.evaluate(({ raVal, digitoVal, ufVal, senhaVal }) => {
-        const inputs = Array.from(document.querySelectorAll('input'));
-        const inputRA = inputs.find(i => i.placeholder && i.placeholder.includes('0000')) || inputs[0];
-        const inputDigito = inputs.find(i => i.placeholder === '0') || inputs[1];
-        const inputSenha = inputs.find(i => i.type === 'password' || (i.placeholder && i.placeholder.toLowerCase().includes('senha'))) || inputs[inputs.length - 1];
-
-        if (inputRA) {
-          inputRA.value = raVal;
-          inputRA.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-        if (inputDigito) {
-          inputDigito.value = digitoVal || '0';
-          inputDigito.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-        if (inputSenha) {
-          inputSenha.value = senhaVal;
-          inputSenha.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-
-        const selectUF = document.querySelector('select');
-        if (selectUF && ufVal) {
-          selectUF.value = ufVal.toUpperCase();
-          selectUF.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-      }, { raVal: ra, digitoVal: digito, ufVal: uf || 'SP', senhaVal: senha });
-
-      console.log('4. Clicando em Acessar...');
-      await page.evaluate(() => {
-        const botoes = Array.from(document.querySelectorAll('button'));
-        const btn = botoes.find(b => b.innerText && b.innerText.trim().toLowerCase().includes('acessar'));
-        if (btn) btn.click();
+      console.log(`Sucesso! ${tarefasMapeadas.length} tarefas encontradas.`);
+      return res.json({
+        sucesso: true,
+        aluno: {
+          nome: data?.student_name || 'Estudante',
+          turma: data?.classroom || 'Turma Ativa'
+        },
+        resumo: {
+          pendencias: tarefasMapeadas.length.toString(),
+          faltas: '0 faltas'
+        },
+        tarefas: tarefasMapeadas
       });
-
-      await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {});
-      await new Promise(r => setTimeout(r, 2000));
     }
 
-    console.log('5. Navegando para /tarefas e aguardando as requisições de API...');
-    await page.goto('https://salvaestudante.com/tarefas', { waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {});
-    await new Promise(r => setTimeout(r, 5000)); // Aguarda tempo suficiente para as APIs responderem
-
-    // Captura dados do perfil do aluno
-    const perfilAluno = await page.evaluate(() => {
-      const body = document.body.innerText;
-      const matchNome = body.match(/Olá,\s*([^\n]+)/i);
-      const matchTurma = body.match(/(\d+ª\s*SERIE[^\n]+)/i);
-      const matchPendencias = body.match(/(\d+)\s*\n*\s*Pendências/i);
-      const matchFaltas = body.match(/(\d+)\s*\n*\s*Faltas/i);
-
-      return {
-        nome: matchNome ? matchNome[1].trim() : 'Estudante',
-        turma: matchTurma ? matchTurma[1].trim() : 'Turma Ativa',
-        totalPendencias: matchPendencias ? matchPendencias[1] : '0',
-        totalFaltas: matchFaltas ? `${matchFaltas[1]} faltas` : '0 faltas'
-      };
-    });
-
-    await browser.close();
-
-    // Filtra tarefas duplicadas pelo ID ou Título
-    const tarefasUnicas = Array.from(new Set(tarefasInterceptadas.map(t => t.id)))
-      .map(id => tarefasInterceptadas.find(t => t.id === id));
-
+    // Caso não venha via requisição direta, lança para o tratamento de resposta padronizada
     return res.json({
       sucesso: true,
-      aluno: {
-        nome: perfilAluno.nome,
-        turma: perfilAluno.turma
-      },
-      resumo: {
-        pendencias: tarefasUnicas.length > 0 ? tarefasUnicas.length.toString() : perfilAluno.totalPendencias,
-        faltas: perfilAluno.totalFaltas
-      },
-      tarefas: tarefasUnicas.length > 0 ? tarefasUnicas : [
+      aluno: { nome: 'Estudante', turma: 'Turma Ativa' },
+      resumo: { pendencias: '0', faltas: '0 faltas' },
+      tarefas: [
         {
           id: "0",
           plataforma: "Tarefa SP",
@@ -168,9 +92,8 @@ app.post('/api/consultar', async (req, res) => {
     });
 
   } catch (error) {
-    if (browser) await browser.close();
-    console.error('Erro:', error.message);
-    return res.status(500).json({ erro: `Falha ao consultar: ${error.message}` });
+    console.error('Erro na requisição:', error.message);
+    return res.status(500).json({ erro: `Falha na consulta da API: ${error.message}` });
   }
 });
 
