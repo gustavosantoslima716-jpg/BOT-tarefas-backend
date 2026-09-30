@@ -2,10 +2,15 @@ const express = require('express');
 const puppeteer = require('puppeteer-core');
 const chromium = require('@sparticuz/chromium');
 const cors = require('cors');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
 app.use(express.json());
 app.use(cors());
+
+// Lê a chave salva com segurança nas configurações do Render
+const apiKey = process.env.GEMINI_API_KEY;
+const genAI = new GoogleGenerativeAI(apiKey);
 
 app.post('/api/consultar', async (req, res) => {
   const { ra, digito, uf, senha } = req.body;
@@ -16,7 +21,7 @@ app.post('/api/consultar', async (req, res) => {
 
   let browser;
   try {
-    console.log('Iniciando Chromium...');
+    console.log('1. Iniciando Chromium...');
     
     browser = await puppeteer.launch({
       args: chromium.args,
@@ -27,16 +32,16 @@ app.post('/api/consultar', async (req, res) => {
     });
 
     const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 800 });
+    await page.setViewport({ width: 1366, height: 768 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
 
-    console.log('Acessando Sala do Futuro...');
+    console.log('2. Acessando portal...');
     await page.goto('https://saladofuturo.educacao.sp.gov.br/login-alunos', {
       waitUntil: 'networkidle2',
       timeout: 60000
     });
 
-    // 1. Preenchimento de Login
+    // Login
     await page.waitForSelector('input', { timeout: 15000 });
     const inputs = await page.$$('input');
     if (inputs.length >= 2) {
@@ -52,124 +57,64 @@ app.post('/api/consultar', async (req, res) => {
       ]);
     }
 
-    console.log('Extraindo informações da conta...');
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    console.log('3. Aguardando carregamento da página...');
+    await new Promise(resolve => setTimeout(resolve, 6000));
 
-    const dadosExtraidos = await page.evaluate(() => {
-      // 1. Captura Nome do Aluno
-      let nomeAluno = 'ESTUDANTE';
-      const bodyText = document.body.innerText || '';
-      const matchOla = bodyText.match(/Olá,\s*([A-Za-zÀ-ÖØ-öø-ÿ]+)/i);
-      if (matchOla && matchOla[1]) {
-        nomeAluno = matchOla[1].trim();
-      }
-
-      // 2. Captura Turma e Escola
-      let turmaInfo = 'SALA DO FUTURO';
-      const elTurma = document.querySelector('.info-turma, [class*="serie"], [class*="turma"]');
-      if (elTurma) {
-        turmaInfo = elTurma.innerText.replace(/\n/g, ' - ').trim();
-      } else {
-        const matchSerie = bodyText.match(/(\d+ª\s*Série[^\n]*)/i);
-        if (matchSerie) turmaInfo = matchSerie[1].trim();
-      }
-
-      // 3. Captura Valor do Card de Faltas Exato
-      let faltasVal = '0';
-      const matchFaltas = bodyText.match(/(\d+)\s*\n?\s*Faltas/i);
-      if (matchFaltas) {
-        faltasVal = matchFaltas[1];
-      }
-
-      // 4. Captura Valor do Card de Pendências do Topo
-      let pendenciasVal = '0';
-      const matchPend = bodyText.match(/(\d+)\s*\n?\s*Pendências/i) || bodyText.match(/(\d+)\s*\n?\s*Pendência/i);
-      if (matchPend) {
-        pendenciasVal = matchPend[1];
-      }
-
-      // 5. Mapeia Badges Vermelhos (Notificações por plataforma)
-      const tarefasLista = [];
-      const redacoesLista = [];
-      const provasLista = [];
-
-      // Procura containers de plataformas
-      const cardsPlataforma = document.querySelectorAll('div, a, button');
-      cardsPlataforma.forEach(card => {
-        const txt = card.innerText || '';
-        
-        // Tarefa SP
-        if (txt.includes('Tarefa SP')) {
-          const badge = card.querySelector('span, div, [class*="badge"], [class*="count"]');
-          const num = badge ? parseInt(badge.innerText.trim()) : 0;
-          if (!isNaN(num) && num > 0) {
-            for (let i = 0; i < num; i++) {
-              tarefasLista.push({
-                plataforma: 'Tarefa SP',
-                titulo: `Tarefa SP Pendente #${i + 1}`,
-                prazo: 'A Fazer'
-              });
-            }
-          }
-        }
-
-        // Redação Paulista
-        if (txt.includes('Redação Paulista')) {
-          const badge = card.querySelector('span, div, [class*="badge"], [class*="count"]');
-          const num = badge ? parseInt(badge.innerText.trim()) : 0;
-          if (!isNaN(num) && num > 0) {
-            for (let i = 0; i < num; i++) {
-              redacoesLista.push({
-                plataforma: 'Redação Paulista',
-                titulo: `Redação Pendente #${i + 1}`,
-                prazo: 'A Fazer'
-              });
-            }
-          }
-        }
-      });
-
-      return {
-        aluno: {
-          nome: nomeAluno,
-          turma: turmaInfo
-        },
-        resumo: {
-          pendenciasTotais: parseInt(pendenciasVal) || (tarefasLista.length + redacoesLista.length),
-          totalTarefas: tarefasLista.length,
-          totalRedacoes: redacoesLista.length,
-          totalProvas: provasLista.length,
-          faltas: `${faltasVal} faltas`
-        },
-        listas: {
-          tarefas: tarefasLista,
-          redacoes: redacoesLista,
-          provas: provasLista
-        }
-      };
-    });
-
+    // Captura o print da tela
+    console.log('4. Tirando print do painel...');
+    const screenshotBuffer = await page.screenshot({ encoding: 'base64', fullPage: false });
     await browser.close();
 
-    // Retorna para o Lovable
+    // Envia imagem para o Gemini
+    console.log('5. Processando dados com Gemini AI...');
+    const model = genAI.getGenerativeModel({ 
+      model: 'gemini-1.5-flash',
+      generationConfig: { responseMimeType: 'application/json' }
+    });
+
+    const prompt = `
+      Analise a imagem deste portal escolar e extraia as informações em formato JSON rigoroso:
+      {
+        "aluno": {
+          "nome": "Primeiro nome do aluno",
+          "nomeCompleto": "Nome completo do aluno",
+          "turma": "Série e turma"
+        },
+        "resumo": {
+          "pendencias": "Número exato do card de Pendências",
+          "faltas": "Número exato do card de Faltas com a palavra faltas"
+        },
+        "tarefas": [
+          {
+            "id": "1",
+            "plataforma": "Tarefa SP",
+            "titulo": "Atividade Pendente #1",
+            "prazo": "Pendente"
+          }
+        ]
+      }
+    `;
+
+    const imagePart = {
+      inlineData: {
+        data: screenshotBuffer,
+        mimeType: 'image/png'
+      }
+    };
+
+    const result = await model.generateContent([prompt, imagePart]);
+    const responseText = result.response.text();
+    const dadosGemini = JSON.parse(responseText);
+
     return res.json({
       sucesso: true,
-      aluno: dadosExtraidos.aluno,
-      resumo: {
-        pendencias: dadosExtraidos.resumo.pendenciasTotais.toString(),
-        faltas: dadosExtraidos.resumo.faltas
-      },
-      tarefas: [
-        ...dadosExtraidos.listas.tarefas,
-        ...dadosExtraidos.listas.redacoes,
-        ...dadosExtraidos.listas.provas
-      ]
+      ...dadosGemini
     });
 
   } catch (error) {
     if (browser) await browser.close();
     console.error('ERRO:', error.message);
-    return res.status(500).json({ erro: `Falha ao processar: ${error.message}` });
+    return res.status(500).json({ erro: `Falha ao processar com Gemini: ${error.message}` });
   }
 });
 
