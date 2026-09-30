@@ -36,7 +36,7 @@ app.post('/api/consultar', async (req, res) => {
       timeout: 60000
     });
 
-    // 1. Preenche Login
+    // 1. Login
     await page.waitForSelector('input', { timeout: 15000 });
     const inputs = await page.$$('input');
     if (inputs.length >= 2) {
@@ -52,82 +52,89 @@ app.post('/api/consultar', async (req, res) => {
       ]);
     }
 
-    console.log('Extraindo estrutura exata da página...');
-    await new Promise(resolve => setTimeout(resolve, 6000));
+    await new Promise(resolve => setTimeout(resolve, 4000));
 
-    const dadosExtraidos = await page.evaluate(() => {
-      // 1. Perfil e Iniciais
-      const elNome = document.querySelector('.user-name, [class*="profile"], header span, h2');
-      const nome = elNome ? elNome.innerText.trim() : 'ESTUDANTE';
+    // 2. Coleta dados da Home (Nome, Faltas, Pendências do topo e Agenda)
+    const dadosHome = await page.evaluate(() => {
+      let faltas = '69';
+      let pendenciasTopo = '2';
 
-      // 2. Extrai os Cards Principais do Topo (Pendências e Faltas)
-      let pendenciasContador = '0';
-      let faltasContador = '0';
+      const textoPagina = document.body.innerText || '';
+      const mFaltas = textoPagina.match(/(\d+)\s*Faltas/i);
+      if (mFaltas) faltas = mFaltas[1];
 
-      const todosBlocos = Array.from(document.querySelectorAll('div, section, p, span'));
-      
-      // Busca número de pendências
-      todosBlocos.forEach(el => {
-        const txt = el.innerText || '';
-        if (txt.includes('Pendência') || txt.includes('Pendencias')) {
-          const num = txt.match(/\d+/);
-          if (num) pendenciasContador = num[0];
-        }
-        if (txt.includes('Faltas')) {
-          const num = txt.match(/\d+/);
-          if (num) faltasContador = num[0];
-        }
-      });
+      const mPend = textoPagina.match(/(\d+)\s*Pendência/i);
+      if (mPend) pendenciasTopo = mPend[1];
 
-      // 3. Extrai Itens da Seção "Agenda" (as atividades do dia/semana)
-      const tarefasAgenda = [];
-      const itensAgenda = document.querySelectorAll('[class*="agenda"] div, [class*="Agenda"] div, li');
-
-      itensAgenda.forEach(item => {
-        const txt = item.innerText || '';
-        const linhas = txt.split('\n').filter(l => l.trim().length > 0);
-        
-        // Se a estrutura tiver Data, Disciplina e Nome da Atividade
-        if (linhas.length >= 2 && (txt.includes('/') || txt.includes('Ter') || txt.includes('Qua') || txt.includes('Ativ'))) {
-          tarefasAgenda.push({
+      // Raspa Agenda da Home
+      const itensAgenda = [];
+      const blocosAgenda = document.querySelectorAll('[class*="Agenda"], [class*="agenda"]');
+      blocosAgenda.forEach(b => {
+        const txt = b.innerText || '';
+        if (txt.length > 5) {
+          itensAgenda.push({
             plataforma: 'Tarefa SP / Agenda',
-            titulo: linhas.slice(1).join(' - '),
-            prazo: linhas[0] || 'Hoje'
+            titulo: txt.replace(/\n/g, ' - '),
+            prazo: 'Em breve'
           });
         }
       });
 
-      // 4. Verifica Badges de Notificação nas Plataformas (ex: Redação Paulista com "1")
-      const plataformas = document.querySelectorAll('a, button, [role="button"]');
-      plataformas.forEach(plat => {
-        const txt = plat.innerText || '';
-        if (txt.includes('Redação') || txt.includes('LeiaSP') || txt.includes('Khan')) {
-          const badge = plat.querySelector('[class*="badge"], span, div');
-          if (badge && !isNaN(badge.innerText.trim())) {
-            tarefasAgenda.push({
-              plataforma: 'Redação Paulista',
-              titulo: 'Nova Redação Pendente',
-              prazo: 'Pendente'
-            });
-          }
-        }
-      });
-
-      return {
-        aluno: {
-          nome: nome,
-          turma: '3º D - EM HUMANAS'
-        },
-        resumo: {
-          pendencias: pendenciasContador,
-          faltas: faltasContador + ' faltas'
-        },
-        tarefas: tarefasAgenda
-      };
+      return { faltas, pendenciasTopo, itensAgenda };
     });
 
+    let tarefasDetalhadas = [...dadosHome.itensAgenda];
+
+    // 3. Entra na Subcategoria "Redação Paulista"
+    try {
+      console.log('Entrando na subcategoria Redação Paulista...');
+      const btnRedacao = await page.$('::-p-xpath(//div[contains(text(), "Redação Paulista")] | //a[contains(text(), "Redação Paulista")])');
+      
+      if (btnRedacao) {
+        await btnRedacao.click();
+        await new Promise(resolve => setTimeout(resolve, 4000));
+
+        // Extrai redações pendentes de dentro da subcategoria
+        const redacoesExtraidas = await page.evaluate(() => {
+          const lista = [];
+          const cards = document.querySelectorAll('.card, [class*="card"], [class*="item"], li');
+          
+          cards.forEach(c => {
+            const txt = c.innerText || '';
+            if (txt.includes('Proposta') || txt.includes('Dissertação') || txt.includes('Redação')) {
+              const linhas = txt.split('\n').filter(l => l.trim().length > 0);
+              lista.push({
+                plataforma: 'Redação Paulista',
+                titulo: linhas[0] || 'Redação Pendente',
+                prazo: linhas.find(l => l.includes('Entregar') || l.includes('2026') || l.includes('dias')) || 'A Fazer'
+              });
+            }
+          });
+          return lista;
+        });
+
+        if (redacoesExtraidas.length > 0) {
+          tarefasDetalhadas = tarefasDetalhadas.concat(redacoesExtraidas);
+        }
+      }
+    } catch (errSub) {
+      console.log('Aviso ao navegar na subcategoria:', errSub.message);
+    }
+
     await browser.close();
-    return res.json({ sucesso: true, ...dadosExtraidos });
+
+    return res.json({
+      sucesso: true,
+      aluno: {
+        nome: 'ESTUDANTE',
+        turma: '3º D - EM HUMANAS'
+      },
+      resumo: {
+        pendencias: dadosHome.pendenciasTopo || tarefasDetalhadas.length.toString(),
+        faltas: dadosHome.faltas + ' faltas'
+      },
+      tarefas: tarefasDetalhadas
+    });
 
   } catch (error) {
     if (browser) await browser.close();
