@@ -2,15 +2,14 @@ const express = require('express');
 const puppeteer = require('puppeteer-core');
 const chromium = require('@sparticuz/chromium');
 const cors = require('cors');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleGenAI } = require('@google/genai');
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Lê a chave salva com segurança nas configurações do Render
-const apiKey = process.env.GEMINI_API_KEY;
-const genAI = new GoogleGenerativeAI(apiKey);
+// O SDK do Google detecta automaticamente a variável process.env.GEMINI_API_KEY
+const ai = new GoogleGenAI({});
 
 app.post('/api/consultar', async (req, res) => {
   const { ra, digito, uf, senha } = req.body;
@@ -60,51 +59,61 @@ app.post('/api/consultar', async (req, res) => {
     console.log('3. Aguardando carregamento da página...');
     await new Promise(resolve => setTimeout(resolve, 6000));
 
-    // Captura o print da tela
+    // Captura o print da tela em base64
     console.log('4. Tirando print do painel...');
-    const screenshotBuffer = await page.screenshot({ encoding: 'base64', fullPage: false });
+    const screenshotBase64 = await page.screenshot({ encoding: 'base64', fullPage: false });
     await browser.close();
 
-    // Envia imagem para o Gemini
+    // Chamada usando a nova API do Gemini 1.5 Flash
     console.log('5. Processando dados com Gemini AI...');
-    const model = genAI.getGenerativeModel({ 
+    const response = await ai.models.generateContent({
       model: 'gemini-1.5-flash',
-      generationConfig: { responseMimeType: 'application/json' }
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              inlineData: {
+                mimeType: 'image/png',
+                data: screenshotBase64,
+              },
+            },
+            {
+              text: `Analise o print deste portal e responda ESTRITAMENTE em formato JSON sem marcadores markdown adicionais:
+              {
+                "aluno": {
+                  "nome": "Primeiro nome do aluno",
+                  "nomeCompleto": "Nome completo",
+                  "turma": "Série e turma"
+                },
+                "resumo": {
+                  "pendencias": "Número exato do card de Pendências",
+                  "faltas": "Número exato de faltas com a palavra faltas"
+                },
+                "tarefas": [
+                  {
+                    "id": "1",
+                    "plataforma": "Tarefa SP",
+                    "titulo": "Atividade Pendente #1",
+                    "prazo": "Pendente"
+                  }
+                ]
+              }`
+            }
+          ]
+        }
+      ]
     });
 
-    const prompt = `
-      Analise a imagem deste portal escolar e extraia as informações em formato JSON rigoroso:
-      {
-        "aluno": {
-          "nome": "Primeiro nome do aluno",
-          "nomeCompleto": "Nome completo do aluno",
-          "turma": "Série e turma"
-        },
-        "resumo": {
-          "pendencias": "Número exato do card de Pendências",
-          "faltas": "Número exato do card de Faltas com a palavra faltas"
-        },
-        "tarefas": [
-          {
-            "id": "1",
-            "plataforma": "Tarefa SP",
-            "titulo": "Atividade Pendente #1",
-            "prazo": "Pendente"
-          }
-        ]
-      }
-    `;
+    // Limpa a resposta para garantir que seja um JSON válido
+    let textResponse = response.text.trim();
+    if (textResponse.startsWith('```json')) {
+      textResponse = textResponse.replace(/^```json/, '').replace(/```$/, '').trim();
+    } else if (textResponse.startsWith('```')) {
+      textResponse = textResponse.replace(/^```/, '').replace(/```$/, '').trim();
+    }
 
-    const imagePart = {
-      inlineData: {
-        data: screenshotBuffer,
-        mimeType: 'image/png'
-      }
-    };
-
-    const result = await model.generateContent([prompt, imagePart]);
-    const responseText = result.response.text();
-    const dadosGemini = JSON.parse(responseText);
+    const dadosGemini = JSON.parse(textResponse);
 
     return res.json({
       sucesso: true,
