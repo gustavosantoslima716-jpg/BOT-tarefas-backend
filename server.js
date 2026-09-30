@@ -38,31 +38,31 @@ app.post('/api/consultar', async (req, res) => {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     );
 
-    // Escuta e captura a API exata descoberta na inspeção de rede
+    // Escuta requisições de API de tarefas no background
     page.on('response', async (response) => {
       const url = response.url();
-      if (url.includes('/api/activities/todo') || url.includes('/api/activities') || url.includes('type=NormalTask')) {
+      if (url.includes('/api/activities') || url.includes('/todo') || url.includes('tasks') || url.includes('tarefa')) {
         try {
           const json = await response.json();
-          console.log('-> API de Tarefas Interceptada com Sucesso!');
+          const items = Array.isArray(json) ? json : (json.data || json.items || json.activities || []);
 
-          const lista = Array.isArray(json) ? json : (json.data || json.items || json.activities || []);
-
-          if (Array.isArray(lista)) {
-            lista.forEach((item, index) => {
-              tarefasInterceptadas.push({
-                id: String(item.id || `task_${index}`),
-                plataforma: item.discipline_name || item.component_name || item.subject || 'Tarefa SP',
-                titulo: item.title || item.name || item.description || 'Tarefa sem título',
-                descricao: item.learning_goals || item.description || '',
-                prazo: item.due_date || (item.expired ? 'Expirado' : 'Vence hoje'),
-                linkAcao: item.url || item.link || 'https://salvaestudante.com/tarefas'
-              });
+          if (Array.isArray(items)) {
+            items.forEach((item, index) => {
+              // Pega estritamente o título/nome da atividade
+              const nomeTarefa = item.title || item.nome || item.name;
+              if (nomeTarefa && !nomeTarefa.toLowerCase().includes('nenhuma atividade')) {
+                tarefasInterceptadas.push({
+                  id: String(item.id || `task_${index}`),
+                  plataforma: item.discipline_name || item.component_name || item.subject || 'Tarefa SP',
+                  titulo: nomeTarefa.trim(),
+                  descricao: item.learning_goals || item.description || item.aprendizagem || '',
+                  prazo: item.due_date || (item.expired ? 'Expirado' : 'A Fazer'),
+                  linkAcao: item.url || item.link || 'https://salvaestudante.com/tarefas'
+                });
+              }
             });
           }
-        } catch (e) {
-          console.error('Erro ao ler JSON da resposta:', e.message);
-        }
+        } catch (e) {}
       }
     });
 
@@ -109,11 +109,43 @@ app.post('/api/consultar', async (req, res) => {
       await new Promise(r => setTimeout(r, 2000));
     }
 
-    console.log('5. Indo diretamente para /tarefas para disparar a API...');
+    console.log('5. Navegando para /tarefas e extraindo dados reais...');
     await page.goto('https://salvaestudante.com/tarefas', { waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {});
-    await new Promise(r => setTimeout(r, 3000));
+    await new Promise(r => setTimeout(r, 4000));
 
-    // Captura dados do perfil do aluno no cabeçalho
+    // Raspagem visual via DOM caso a API falhe
+    const tarefasDOM = await page.evaluate(() => {
+      const resultados = [];
+      const elementos = Array.from(document.querySelectorAll('h3, h4, strong, [class*="titulo"], [class*="title"]'));
+
+      elementos.forEach((el, idx) => {
+        const texto = el.innerText ? el.innerText.trim() : '';
+        // Procura por títulos que iniciem com "Tarefa" (ex: "Tarefa 4: Evolução da Vida e Filogenia")
+        if (texto.toLowerCase().startsWith('tarefa') && texto.length > 5 && !resultados.some(r => r.titulo === texto)) {
+          // Pega o container pai do card para extrair a descrição
+          const container = el.closest('div[class*="card"], div[style*="border"], article, section') || el.parentElement;
+          const textoContainer = container ? container.innerText : '';
+          
+          let descricao = '';
+          if (textoContainer.includes('Aprendizagem Essencial:')) {
+            descricao = textoContainer.split('Aprendizagem Essencial:')[1]?.split('\n')[0]?.trim() || '';
+          }
+
+          resultados.push({
+            id: `dom_${idx}`,
+            plataforma: 'Tarefa SP',
+            titulo: texto,
+            descricao: descricao,
+            prazo: textoContainer.includes('Expirado') ? 'Expirado' : 'A Fazer',
+            linkAcao: 'https://salvaestudante.com/tarefas'
+          });
+        }
+      });
+
+      return resultados;
+    });
+
+    // Captura os dados do perfil do aluno
     const perfilAluno = await page.evaluate(() => {
       const body = document.body.innerText;
       const matchNome = body.match(/Olá,\s*([^\n]+)/i);
@@ -131,9 +163,10 @@ app.post('/api/consultar', async (req, res) => {
 
     await browser.close();
 
-    // Filtra tarefas duplicadas pelo título
-    const tarefasUnicas = Array.from(new Set(tarefasInterceptadas.map(t => t.titulo)))
-      .map(titulo => tarefasInterceptadas.find(t => t.titulo === titulo));
+    // Consolida e remove duplicatas
+    const todasTarefas = [...tarefasInterceptadas, ...tarefasDOM];
+    const tarefasUnicas = Array.from(new Set(todasTarefas.map(t => t.titulo)))
+      .map(titulo => todasTarefas.find(t => t.titulo === titulo));
 
     return res.json({
       sucesso: true,
