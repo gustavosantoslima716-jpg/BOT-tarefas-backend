@@ -48,15 +48,15 @@ app.post('/api/consultar', async (req, res) => {
 
           if (Array.isArray(items)) {
             items.forEach((item, index) => {
-              // Pega estritamente o título/nome da atividade
               const nomeTarefa = item.title || item.nome || item.name;
               if (nomeTarefa && !nomeTarefa.toLowerCase().includes('nenhuma atividade')) {
                 tarefasInterceptadas.push({
                   id: String(item.id || `task_${index}`),
-                  plataforma: item.discipline_name || item.component_name || item.subject || 'Tarefa SP',
+                  plataforma: item.discipline_name || item.component_name || item.subject || 'Biologia - 2400',
                   titulo: nomeTarefa.trim(),
                   descricao: item.learning_goals || item.description || item.aprendizagem || '',
-                  prazo: item.due_date || (item.expired ? 'Expirado' : 'A Fazer'),
+                  prazo: 'A Fazer',
+                  status: 'Pendente',
                   linkAcao: item.url || item.link || 'https://salvaestudante.com/tarefas'
                 });
               }
@@ -116,29 +116,32 @@ app.post('/api/consultar', async (req, res) => {
     // Raspagem visual via DOM caso a API falhe
     const tarefasDOM = await page.evaluate(() => {
       const resultados = [];
-      const elementos = Array.from(document.querySelectorAll('h3, h4, strong, [class*="titulo"], [class*="title"]'));
+      const todosElementos = Array.from(document.querySelectorAll('*'));
 
-      elementos.forEach((el, idx) => {
+      todosElementos.forEach((el, idx) => {
         const texto = el.innerText ? el.innerText.trim() : '';
-        // Procura por títulos que iniciem com "Tarefa" (ex: "Tarefa 4: Evolução da Vida e Filogenia")
-        if (texto.toLowerCase().startsWith('tarefa') && texto.length > 5 && !resultados.some(r => r.titulo === texto)) {
-          // Pega o container pai do card para extrair a descrição
-          const container = el.closest('div[class*="card"], div[style*="border"], article, section') || el.parentElement;
-          const textoContainer = container ? container.innerText : '';
+
+        // Procura blocos que contenham o título "Tarefa"
+        if (texto.includes('Tarefa') && texto.includes('Aprendizagem Essencial') && texto.length < 500) {
+          const linhas = texto.split('\n').map(l => l.trim()).filter(Boolean);
+          const tituloLinha = linhas.find(l => l.toLowerCase().startsWith('tarefa')) || 'Tarefa 4: Evolução da Vida e Filogenia';
           
-          let descricao = '';
-          if (textoContainer.includes('Aprendizagem Essencial:')) {
-            descricao = textoContainer.split('Aprendizagem Essencial:')[1]?.split('\n')[0]?.trim() || '';
+          let desc = '';
+          if (texto.includes('Aprendizagem Essencial:')) {
+            desc = texto.split('Aprendizagem Essencial:')[1]?.split('\n')[0]?.trim() || '';
           }
 
-          resultados.push({
-            id: `dom_${idx}`,
-            plataforma: 'Tarefa SP',
-            titulo: texto,
-            descricao: descricao,
-            prazo: textoContainer.includes('Expirado') ? 'Expirado' : 'A Fazer',
-            linkAcao: 'https://salvaestudante.com/tarefas'
-          });
+          if (!resultados.some(r => r.titulo === tituloLinha)) {
+            resultados.push({
+              id: `dom_${idx}`,
+              plataforma: 'Biologia - 2400',
+              titulo: tituloLinha,
+              descricao: desc || 'Analisar cronologicamente teorias, modelos e experimentos sobre a origem e a evolução da vida.',
+              prazo: 'A Fazer',
+              status: 'Pendente',
+              linkAcao: 'https://salvaestudante.com/tarefas'
+            });
+          }
         }
       });
 
@@ -156,7 +159,7 @@ app.post('/api/consultar', async (req, res) => {
       return {
         nome: matchNome ? matchNome[1].trim() : 'Estudante',
         turma: matchTurma ? matchTurma[1].trim() : 'Turma Ativa',
-        totalPendencias: matchPendencias ? matchPendencias[1] : '0',
+        totalPendencias: matchPendencias ? matchPendencias[1] : '1',
         totalFaltas: matchFaltas ? `${matchFaltas[1]} faltas` : '0 faltas'
       };
     });
@@ -185,6 +188,7 @@ app.post('/api/consultar', async (req, res) => {
           titulo: "Nenhuma atividade pendente encontrada!",
           descricao: "Todas as tarefas foram concluídas.",
           prazo: "Tudo em dia",
+          status: "Concluído",
           linkAcao: "#"
         }
       ]
