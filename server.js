@@ -8,11 +8,11 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Recupera a chave e garante que não seja enviada vazia
+// Lê a chave guardada nas variáveis de ambiente do Render
 const apiKey = process.env.GEMINI_API_KEY || '';
 
 if (!apiKey) {
-  console.error('AVISO CRÍTICO: A variável GEMINI_API_KEY não foi encontrada no ambiente!');
+  console.error('AVISO CRÍTICO: GEMINI_API_KEY não foi encontrada nas variáveis do Render!');
 } else {
   console.log('Chave GEMINI_API_KEY carregada com sucesso.');
 }
