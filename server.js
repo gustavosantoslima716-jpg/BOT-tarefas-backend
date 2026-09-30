@@ -16,7 +16,7 @@ app.post('/api/consultar', async (req, res) => {
 
   let browser;
   try {
-    console.log('1. Iniciando navegador leve...');
+    console.log('1. Iniciando navegador para Salva Estudante...');
     
     browser = await puppeteer.launch({
       args: [...chromium.args, '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
@@ -27,114 +27,108 @@ app.post('/api/consultar', async (req, res) => {
     });
 
     const page = await browser.newPage();
-    
-    // Otimização: Bloqueia imagens, fontes e CSS para carregar a página em 1 segundo
-    await page.setRequestInterception(true);
-    page.on('request', (req) => {
-      const resourceType = req.resourceType();
-      if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-        req.abort();
-      } else {
-        req.continue();
-      }
-    });
+    await page.setViewport({ width: 1280, height: 720 });
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
 
-    let bearerToken = null;
+    const todasPendencias = [];
 
-    // Escuta a rede para capturar o Token do usuário no momento do login
-    page.on('request', (request) => {
-      const headers = request.headers();
-      if (headers['authorization'] && headers['authorization'].startsWith('Bearer ')) {
-        bearerToken = headers['authorization'];
-      }
-    });
-
-    console.log('2. Acessando página de login...');
-    await page.goto('https://saladofuturo.educacao.sp.gov.br/login-alunos', {
-      waitUntil: 'domcontentloaded',
-      timeout: 20000
-    });
-
-    // Preenche login
-    await page.waitForSelector('input', { timeout: 10000 });
-    const inputs = await page.$$('input');
-    if (inputs.length >= 2) {
-      await inputs[0].type(ra + (digito || ''));
-      await inputs[inputs.length - 1].type(senha);
-    }
-
-    const submitBtn = await page.$('button[type="submit"], button');
-    if (submitBtn) {
-      await Promise.all([
-        submitBtn.click(),
-        page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {})
-      ]);
-    }
-
-    console.log('3. Capturando dados do perfil e realizando requisições diretas via API...');
-    
-    // Executa as chamadas de API direto do contexto da página logada (muito mais rápido que clicar)
-    const resultadoAPI = await page.evaluate(async () => {
-      const bodyText = document.body.innerText;
-      const matchNome = bodyText.match(/Olá,\s*([^\n]+)/i);
-      const matchTurma = bodyText.match(/(\d+ª\s*Série[^\n]+)/i);
-      const matchFaltas = bodyText.match(/FALTAS \/ FREQUÊNCIA[\s\S]*?(\d+)/i) || bodyText.match(/(\d+)\s*\n*\s*Faltas/i);
-
-      const alunoInfo = {
-        nome: matchNome ? matchNome[1].trim() : 'Aluno',
-        turma: matchTurma ? matchTurma[1].trim() : 'Turma Ativa',
-        faltas: matchFaltas ? `${matchFaltas[1]} faltas` : '0 faltas'
-      };
-
-      // Função para consultar a API interna
-      async function buscarEndpoint(url) {
+    // Interceptador para capturar APIs de tarefas/atividades em segundo plano
+    page.on('response', async (response) => {
+      const url = response.url();
+      if (url.includes('todo') || url.includes('tarefa') || url.includes('redacao') || url.includes('api')) {
         try {
-          const res = await fetch(url, { method: 'GET', headers: { 'Accept': 'application/json' } });
-          if (!res.ok) return [];
-          const data = await res.json();
-          return data.data || data.items || (Array.isArray(data) ? data : []);
-        } catch (e) {
-          return [];
+          const json = await response.json();
+          const items = json.data || json.items || (Array.isArray(json) ? json : []);
+          if (Array.isArray(items)) {
+            items.forEach((item, index) => {
+              todasPendencias.push({
+                id: String(item.id || `item_${Date.now()}_${index}`),
+                plataforma: item.discipline_name || item.componente || item.categoria || 'Tarefa SP',
+                titulo: item.title || item.nome || item.descricao || 'Atividade Pendente',
+                prazo: item.due_date || item.data_limite || 'Pendente'
+              });
+            });
+          }
+        } catch (e) {}
+      }
+    });
+
+    console.log('2. Acessando salvaestudante.com...');
+    await page.goto('https://salvaestudante.com', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
+    });
+
+    // Se houver tela de login, preenche os campos
+    const inputExist = await page.$('input');     if (inputExist) {       const inputs = await page.$$('input');
+      if (inputs.length >= 2) {
+        await inputs[0].type(ra + (digito || ''));
+        await inputs[inputs.length - 1].type(senha);
+
+        const submitBtn = await page.$('button[type="submit"], button');
+        if (submitBtn) {
+          await Promise.all([
+            submitBtn.click(),
+            page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {})
+          ]);
         }
       }
+    }
 
-      // Busca em paralelo todos os tipos de tarefas/pendências (expiradas ou no prazo)
-      const endpoints = [
-        '/api/todo?expired_only=false&limit=50',
-        '/api/todo?expired_only=true&limit=50'
-      ];
+    console.log('3. Extraindo dados do perfil e cards da Home...');
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
-      const resultados = await Promise.all(endpoints.map(ep => buscarEndpoint(ep)));
-      const todas = resultados.flat();
+    const dadosHome = await page.evaluate(() => {
+      const bodyText = document.body.innerText;
+      
+      // Captura o nome (ex: Olá, MAISA)
+      const matchNome = bodyText.match(/Olá,\s*([^\n]+)/i);
+      // Captura a turma (ex: 2ª SERIE C NOITE ANUAL)
+      const matchTurma = bodyText.match(/(\d+ª\s*SERIE[^\n]+)/i);
+      // Captura o número de pendências e faltas dos cards
+      const matchPendencias = bodyText.match(/(\d+)\s*\n*\s*Pendências/i);
+      const matchFaltas = bodyText.match(/(\d+)\s*\n*\s*Faltas/i);
 
-      return { alunoInfo, todas };
+      return {
+        nome: matchNome ? matchNome[1].trim() : 'Estudante',
+        turma: matchTurma ? matchTurma[1].trim() : 'Turma Ativa',
+        totalPendencias: matchPendencias ? matchPendencias[1] : '0',
+        totalFaltas: matchFaltas ? `${matchFaltas[1]} faltas` : '0 faltas'
+      };
     });
+
+    console.log('4. Navegando pelas seções de Tarefas e Redações...');
+    
+    // Clica nos itens do menu ou navega diretamente pelas abas
+    const navegarAba = async (textoAba) => {
+      try {
+        await page.evaluate((txt) => {
+          const el = Array.from(document.querySelectorAll('a, button, div, span'))
+            .find(e => e.innerText && e.innerText.trim().toLowerCase() === txt.toLowerCase());
+          if (el) el.click();
+        }, textoAba);
+        await new Promise(resolve => setTimeout(resolve, 2500));
+      } catch (e) {}
+    };
+
+    await navegarAba('Tarefas');
+    await navegarAba('Redações');
 
     await browser.close();
 
-    // Mapeia e padroniza as pendências encontradas
-    const pendenciasMapeadas = resultadoAPI.todas.map((item, index) => ({
-      id: String(item.id || `item_${index}`),
-      plataforma: item.discipline_name || item.componente || item.categoria || 'Tarefa SP',
-      titulo: item.title || item.nome || item.descricao || 'Atividade Pendente',
-      prazo: item.due_date || item.data_limite || (item.expired ? 'Atrasada' : 'Pendente')
-    }));
-
-    // Remove duplicatas por título
-    const pendenciasFinais = Array.from(new Set(pendenciasMapeadas.map(a => a.titulo)))
-      .map(titulo => pendenciasMapeadas.find(a => a.titulo === titulo));
-
-    console.log(`Sucesso em tempo recorde! ${pendenciasFinais.length} itens encontrados.`);
+    // Remove duplicados
+    const pendenciasFinais = Array.from(new Set(todasPendencias.map(a => a.titulo)))
+      .map(titulo => todasPendencias.find(a => a.titulo === titulo));
 
     return res.json({
       sucesso: true,
       aluno: {
-        nome: resultadoAPI.alunoInfo.nome,
-        turma: resultadoAPI.alunoInfo.turma
+        nome: dadosHome.nome,
+        turma: dadosHome.turma
       },
       resumo: {
-        pendencias: pendenciasFinais.length.toString(),
-        faltas: resultadoAPI.alunoInfo.faltas
+        pendencias: pendenciasFinais.length > 0 ? pendenciasFinais.length.toString() : dadosHome.totalPendencias,
+        faltas: dadosHome.totalFaltas
       },
       tarefas: pendenciasFinais.length > 0 ? pendenciasFinais : [
         {
@@ -149,7 +143,7 @@ app.post('/api/consultar', async (req, res) => {
   } catch (error) {
     if (browser) await browser.close();
     console.error('ERRO:', error.message);
-    return res.status(500).json({ erro: `Falha na sincronização: ${error.message}` });
+    return res.status(500).json({ erro: `Falha na consulta no Salva Estudante: ${error.message}` });
   }
 });
 
