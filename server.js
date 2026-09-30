@@ -2,7 +2,6 @@ const express = require('express');
 const puppeteer = require('puppeteer-core');
 const chromium = require('@sparticuz/chromium');
 const cors = require('cors');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
 app.use(express.json());
@@ -13,14 +12,6 @@ app.post('/api/consultar', async (req, res) => {
 
   if (!ra || !senha) {
     return res.status(400).json({ erro: 'RA e senha são obrigatórios.' });
-  }
-
-  // Captura e valida a chave DIRETAMENTE no momento em que a requisição chega
-  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
-
-  if (!apiKey) {
-    console.error('ERRO: A variável GEMINI_API_KEY está vazia no Render!');
-    return res.status(500).json({ erro: 'Chave de API do Gemini não configurada no servidor.' });
   }
 
   let browser;
@@ -45,7 +36,7 @@ app.post('/api/consultar', async (req, res) => {
       timeout: 60000
     });
 
-    // Login
+    // Processo de Login
     await page.waitForSelector('input', { timeout: 15000 });
     const inputs = await page.$$('input');
     if (inputs.length >= 2) {
@@ -61,65 +52,66 @@ app.post('/api/consultar', async (req, res) => {
       ]);
     }
 
-    console.log('3. Aguardando carregamento do painel...');
-    await new Promise(resolve => setTimeout(resolve, 6000));
+    console.log('3. Aguardando carregamento dos dados...');
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
-    // Captura screenshot em base64
-    console.log('4. Tirando screenshot do painel...');
-    const screenshotBuffer = await page.screenshot({ encoding: 'base64', fullPage: false });
-    await browser.close();
+    // Extração direta do DOM sem depender da IA do Gemini
+    console.log('4. Extraindo dados do painel...');
+    const dadosExtraidos = await page.evaluate(() => {
+      const bodyText = document.body.innerText;
 
-    // Processamento com a API do Gemini instanciando a chave no escopo local
-    console.log('5. Analisando dados com Gemini AI...');
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ 
-      model: 'gemini-1.5-flash',
-      generationConfig: { responseMimeType: 'application/json' }
-    });
+      // Extrai o nome após "Olá, "
+      const matchNome = bodyText.match(/Olá,\s*([^\n]+)/i);
+      const primeiroNome = matchNome ? matchNome[1].trim() : 'Aluno';
 
-    const prompt = `
-      Analise a imagem deste portal escolar e extraia as informações em formato JSON rigoroso:
-      {
-        "aluno": {
-          "nome": "Primeiro nome do aluno",
-          "nomeCompleto": "Nome completo do aluno",
-          "turma": "Série e turma"
+      // Captura o nome completo se presente no cabeçalho
+      const matchCompleto = bodyText.match(/([A-Z\s]{5,})\n/);
+      const nomeCompleto = matchCompleto ? matchCompleto[1].trim() : primeiroNome;
+
+      // Captura a Turma (ex: 3ª Série H Noite Anual)
+      const matchTurma = bodyText.match(/(\d+ª\s*Série[^\n]+)/i);
+      const turma = matchTurma ? matchTurma[1].trim() : 'Turma não identificada';
+
+      // Captura o número de Pendências (procura números perto de "Pendências")
+      const matchPendencias = bodyText.match(/(\d+)\s*\n*\s*Pendências/i);
+      const pendencias = matchPendencias ? matchPendencias[1] : '0';
+
+      // Captura o número de Faltas
+      const matchFaltas = bodyText.match(/(\d+)\s*\n*\s*Faltas/i);
+      const faltas = matchFaltas ? `${matchFaltas[1]} faltas` : '0 faltas';
+
+      return {
+        aluno: {
+          nome: primeiroNome,
+          nomeCompleto: nomeCompleto,
+          turma: turma
         },
-        "resumo": {
-          "pendencias": "Número exato do card de Pendências",
-          "faltas": "Número exato do card de Faltas com a palavra faltas"
+        resumo: {
+          pendencias: pendencias,
+          faltas: faltas
         },
-        "tarefas": [
+        tarefas: [
           {
-            "id": "1",
-            "plataforma": "Tarefa SP",
-            "titulo": "Atividade Pendente #1",
-            "prazo": "Pendente"
+            id: "1",
+            plataforma: "Tarefa SP",
+            titulo: `${pendencias} atividades pendentes na plataforma`,
+            prazo: "Pendente"
           }
         ]
-      }
-    `;
+      };
+    });
 
-    const imagePart = {
-      inlineData: {
-        data: screenshotBuffer,
-        mimeType: 'image/png'
-      }
-    };
-
-    const result = await model.generateContent([prompt, imagePart]);
-    const responseText = result.response.text();
-    const dadosGemini = JSON.parse(responseText);
+    await browser.close();
 
     return res.json({
       sucesso: true,
-      ...dadosGemini
+      ...dadosExtraidos
     });
 
   } catch (error) {
     if (browser) await browser.close();
     console.error('ERRO:', error.message);
-    return res.status(500).json({ erro: `Falha ao processar com Gemini: ${error.message}` });
+    return res.status(500).json({ erro: `Falha ao processar dados: ${error.message}` });
   }
 });
 
