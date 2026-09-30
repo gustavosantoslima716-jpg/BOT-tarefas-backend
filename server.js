@@ -38,31 +38,41 @@ app.post('/api/consultar', async (req, res) => {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     );
 
-    // Escuta requisições de API de tarefas no background
+    // Intercepta as respostas de rede (equivalente a olhar a aba Response no DevTools)
     page.on('response', async (response) => {
       const url = response.url();
-      if (url.includes('/api/activities') || url.includes('/todo') || url.includes('tasks') || url.includes('tarefa')) {
+      // Filtra chamadas de API de tarefas (ex: edusp, tasks, activities)
+      if (
+        url.includes('/api/activities') || 
+        url.includes('/todo') || 
+        url.includes('tasks') || 
+        url.includes('tarefa') || 
+        url.includes('edusp')
+      ) {
         try {
           const json = await response.json();
           const items = Array.isArray(json) ? json : (json.data || json.items || json.activities || []);
 
           if (Array.isArray(items)) {
-            items.forEach((item, index) => {
-              const nomeTarefa = item.title || item.nome || item.name;
-              if (nomeTarefa && !nomeTarefa.toLowerCase().includes('nenhuma atividade')) {
+            items.forEach((item) => {
+              // Pega exatamente os campos do JSON que você mostrou na aba Responses
+              const tituloReal = item.title || item.nome || item.name;
+
+              if (tituloReal && !tarefasInterceptadas.some(t => t.id === String(item.id))) {
                 tarefasInterceptadas.push({
-                  id: String(item.id || `task_${index}`),
-                  plataforma: item.discipline_name || item.component_name || item.subject || 'Biologia - 2400',
-                  titulo: nomeTarefa.trim(),
-                  descricao: item.learning_goals || item.description || item.aprendizagem || '',
-                  prazo: 'A Fazer',
-                  status: 'Pendente',
-                  linkAcao: item.url || item.link || 'https://salvaestudante.com/tarefas'
+                  id: String(item.id),
+                  plataforma: item.realm ? item.realm.toUpperCase() : 'Tarefa SP',
+                  titulo: tituloReal.trim(),
+                  descricao: item.description || item.learning_goals || '',
+                  prazo: item.task_expired ? 'Expirado' : 'A Fazer',
+                  linkAcao: 'https://salvaestudante.com/tarefas'
                 });
               }
             });
           }
-        } catch (e) {}
+        } catch (e) {
+          // Ignora respostas que não forem JSON válido
+        }
       }
     });
 
@@ -109,46 +119,11 @@ app.post('/api/consultar', async (req, res) => {
       await new Promise(r => setTimeout(r, 2000));
     }
 
-    console.log('5. Navegando para /tarefas e extraindo dados reais...');
+    console.log('5. Navegando para /tarefas e aguardando as requisições de API...');
     await page.goto('https://salvaestudante.com/tarefas', { waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {});
-    await new Promise(r => setTimeout(r, 4000));
+    await new Promise(r => setTimeout(r, 5000)); // Aguarda tempo suficiente para as APIs responderem
 
-    // Raspagem visual via DOM caso a API falhe
-    const tarefasDOM = await page.evaluate(() => {
-      const resultados = [];
-      const todosElementos = Array.from(document.querySelectorAll('*'));
-
-      todosElementos.forEach((el, idx) => {
-        const texto = el.innerText ? el.innerText.trim() : '';
-
-        // Procura blocos que contenham o título "Tarefa"
-        if (texto.includes('Tarefa') && texto.includes('Aprendizagem Essencial') && texto.length < 500) {
-          const linhas = texto.split('\n').map(l => l.trim()).filter(Boolean);
-          const tituloLinha = linhas.find(l => l.toLowerCase().startsWith('tarefa')) || 'Tarefa 4: Evolução da Vida e Filogenia';
-          
-          let desc = '';
-          if (texto.includes('Aprendizagem Essencial:')) {
-            desc = texto.split('Aprendizagem Essencial:')[1]?.split('\n')[0]?.trim() || '';
-          }
-
-          if (!resultados.some(r => r.titulo === tituloLinha)) {
-            resultados.push({
-              id: `dom_${idx}`,
-              plataforma: 'Biologia - 2400',
-              titulo: tituloLinha,
-              descricao: desc || 'Analisar cronologicamente teorias, modelos e experimentos sobre a origem e a evolução da vida.',
-              prazo: 'A Fazer',
-              status: 'Pendente',
-              linkAcao: 'https://salvaestudante.com/tarefas'
-            });
-          }
-        }
-      });
-
-      return resultados;
-    });
-
-    // Captura os dados do perfil do aluno
+    // Captura dados do perfil do aluno
     const perfilAluno = await page.evaluate(() => {
       const body = document.body.innerText;
       const matchNome = body.match(/Olá,\s*([^\n]+)/i);
@@ -159,17 +134,16 @@ app.post('/api/consultar', async (req, res) => {
       return {
         nome: matchNome ? matchNome[1].trim() : 'Estudante',
         turma: matchTurma ? matchTurma[1].trim() : 'Turma Ativa',
-        totalPendencias: matchPendencias ? matchPendencias[1] : '1',
+        totalPendencias: matchPendencias ? matchPendencias[1] : '0',
         totalFaltas: matchFaltas ? `${matchFaltas[1]} faltas` : '0 faltas'
       };
     });
 
     await browser.close();
 
-    // Consolida e remove duplicatas
-    const todasTarefas = [...tarefasInterceptadas, ...tarefasDOM];
-    const tarefasUnicas = Array.from(new Set(todasTarefas.map(t => t.titulo)))
-      .map(titulo => todasTarefas.find(t => t.titulo === titulo));
+    // Filtra tarefas duplicadas pelo ID ou Título
+    const tarefasUnicas = Array.from(new Set(tarefasInterceptadas.map(t => t.id)))
+      .map(id => tarefasInterceptadas.find(t => t.id === id));
 
     return res.json({
       sucesso: true,
@@ -188,7 +162,6 @@ app.post('/api/consultar', async (req, res) => {
           titulo: "Nenhuma atividade pendente encontrada!",
           descricao: "Todas as tarefas foram concluídas.",
           prazo: "Tudo em dia",
-          status: "Concluído",
           linkAcao: "#"
         }
       ]
