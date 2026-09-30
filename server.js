@@ -36,7 +36,7 @@ app.post('/api/consultar', async (req, res) => {
       timeout: 60000
     });
 
-    // 1. Login
+    // 1. Preenchimento de Login
     await page.waitForSelector('input', { timeout: 15000 });
     const inputs = await page.$$('input');
     if (inputs.length >= 2) {
@@ -52,88 +52,118 @@ app.post('/api/consultar', async (req, res) => {
       ]);
     }
 
-    await new Promise(resolve => setTimeout(resolve, 4000));
+    console.log('Extraindo informações da conta...');
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
-    // 2. Coleta dados da Home (Nome, Faltas, Pendências do topo e Agenda)
-    const dadosHome = await page.evaluate(() => {
-      let faltas = '69';
-      let pendenciasTopo = '2';
+    const dadosExtraidos = await page.evaluate(() => {
+      // 1. Captura Nome do Aluno
+      let nomeAluno = 'ESTUDANTE';
+      const bodyText = document.body.innerText || '';
+      const matchOla = bodyText.match(/Olá,\s*([A-Za-zÀ-ÖØ-öø-ÿ]+)/i);
+      if (matchOla && matchOla[1]) {
+        nomeAluno = matchOla[1].trim();
+      }
 
-      const textoPagina = document.body.innerText || '';
-      const mFaltas = textoPagina.match(/(\d+)\s*Faltas/i);
-      if (mFaltas) faltas = mFaltas[1];
+      // 2. Captura Turma e Escola
+      let turmaInfo = 'SALA DO FUTURO';
+      const elTurma = document.querySelector('.info-turma, [class*="serie"], [class*="turma"]');
+      if (elTurma) {
+        turmaInfo = elTurma.innerText.replace(/\n/g, ' - ').trim();
+      } else {
+        const matchSerie = bodyText.match(/(\d+ª\s*Série[^\n]*)/i);
+        if (matchSerie) turmaInfo = matchSerie[1].trim();
+      }
 
-      const mPend = textoPagina.match(/(\d+)\s*Pendência/i);
-      if (mPend) pendenciasTopo = mPend[1];
+      // 3. Captura Valor do Card de Faltas Exato
+      let faltasVal = '0';
+      const matchFaltas = bodyText.match(/(\d+)\s*\n?\s*Faltas/i);
+      if (matchFaltas) {
+        faltasVal = matchFaltas[1];
+      }
 
-      // Raspa Agenda da Home
-      const itensAgenda = [];
-      const blocosAgenda = document.querySelectorAll('[class*="Agenda"], [class*="agenda"]');
-      blocosAgenda.forEach(b => {
-        const txt = b.innerText || '';
-        if (txt.length > 5) {
-          itensAgenda.push({
-            plataforma: 'Tarefa SP / Agenda',
-            titulo: txt.replace(/\n/g, ' - '),
-            prazo: 'Em breve'
-          });
+      // 4. Captura Valor do Card de Pendências do Topo
+      let pendenciasVal = '0';
+      const matchPend = bodyText.match(/(\d+)\s*\n?\s*Pendências/i) || bodyText.match(/(\d+)\s*\n?\s*Pendência/i);
+      if (matchPend) {
+        pendenciasVal = matchPend[1];
+      }
+
+      // 5. Mapeia Badges Vermelhos (Notificações por plataforma)
+      const tarefasLista = [];
+      const redacoesLista = [];
+      const provasLista = [];
+
+      // Procura containers de plataformas
+      const cardsPlataforma = document.querySelectorAll('div, a, button');
+      cardsPlataforma.forEach(card => {
+        const txt = card.innerText || '';
+        
+        // Tarefa SP
+        if (txt.includes('Tarefa SP')) {
+          const badge = card.querySelector('span, div, [class*="badge"], [class*="count"]');
+          const num = badge ? parseInt(badge.innerText.trim()) : 0;
+          if (!isNaN(num) && num > 0) {
+            for (let i = 0; i < num; i++) {
+              tarefasLista.push({
+                plataforma: 'Tarefa SP',
+                titulo: `Tarefa SP Pendente #${i + 1}`,
+                prazo: 'A Fazer'
+              });
+            }
+          }
+        }
+
+        // Redação Paulista
+        if (txt.includes('Redação Paulista')) {
+          const badge = card.querySelector('span, div, [class*="badge"], [class*="count"]');
+          const num = badge ? parseInt(badge.innerText.trim()) : 0;
+          if (!isNaN(num) && num > 0) {
+            for (let i = 0; i < num; i++) {
+              redacoesLista.push({
+                plataforma: 'Redação Paulista',
+                titulo: `Redação Pendente #${i + 1}`,
+                prazo: 'A Fazer'
+              });
+            }
+          }
         }
       });
 
-      return { faltas, pendenciasTopo, itensAgenda };
-    });
-
-    let tarefasDetalhadas = [...dadosHome.itensAgenda];
-
-    // 3. Entra na Subcategoria "Redação Paulista"
-    try {
-      console.log('Entrando na subcategoria Redação Paulista...');
-      const btnRedacao = await page.$('::-p-xpath(//div[contains(text(), "Redação Paulista")] | //a[contains(text(), "Redação Paulista")])');
-      
-      if (btnRedacao) {
-        await btnRedacao.click();
-        await new Promise(resolve => setTimeout(resolve, 4000));
-
-        // Extrai redações pendentes de dentro da subcategoria
-        const redacoesExtraidas = await page.evaluate(() => {
-          const lista = [];
-          const cards = document.querySelectorAll('.card, [class*="card"], [class*="item"], li');
-          
-          cards.forEach(c => {
-            const txt = c.innerText || '';
-            if (txt.includes('Proposta') || txt.includes('Dissertação') || txt.includes('Redação')) {
-              const linhas = txt.split('\n').filter(l => l.trim().length > 0);
-              lista.push({
-                plataforma: 'Redação Paulista',
-                titulo: linhas[0] || 'Redação Pendente',
-                prazo: linhas.find(l => l.includes('Entregar') || l.includes('2026') || l.includes('dias')) || 'A Fazer'
-              });
-            }
-          });
-          return lista;
-        });
-
-        if (redacoesExtraidas.length > 0) {
-          tarefasDetalhadas = tarefasDetalhadas.concat(redacoesExtraidas);
+      return {
+        aluno: {
+          nome: nomeAluno,
+          turma: turmaInfo
+        },
+        resumo: {
+          pendenciasTotais: parseInt(pendenciasVal) || (tarefasLista.length + redacoesLista.length),
+          totalTarefas: tarefasLista.length,
+          totalRedacoes: redacoesLista.length,
+          totalProvas: provasLista.length,
+          faltas: `${faltasVal} faltas`
+        },
+        listas: {
+          tarefas: tarefasLista,
+          redacoes: redacoesLista,
+          provas: provasLista
         }
-      }
-    } catch (errSub) {
-      console.log('Aviso ao navegar na subcategoria:', errSub.message);
-    }
+      };
+    });
 
     await browser.close();
 
+    // Retorna para o Lovable
     return res.json({
       sucesso: true,
-      aluno: {
-        nome: 'ESTUDANTE',
-        turma: '3º D - EM HUMANAS'
-      },
+      aluno: dadosExtraidos.aluno,
       resumo: {
-        pendencias: dadosHome.pendenciasTopo || tarefasDetalhadas.length.toString(),
-        faltas: dadosHome.faltas + ' faltas'
+        pendencias: dadosExtraidos.resumo.pendenciasTotais.toString(),
+        faltas: dadosExtraidos.resumo.faltas
       },
-      tarefas: tarefasDetalhadas
+      tarefas: [
+        ...dadosExtraidos.listas.tarefas,
+        ...dadosExtraidos.listas.redacoes,
+        ...dadosExtraidos.listas.provas
+      ]
     });
 
   } catch (error) {
