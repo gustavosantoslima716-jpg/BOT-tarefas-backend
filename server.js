@@ -8,22 +8,19 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Lê a chave guardada nas variáveis de ambiente do Render
-const apiKey = process.env.GEMINI_API_KEY || '';
-
-if (!apiKey) {
-  console.error('AVISO CRÍTICO: GEMINI_API_KEY não foi encontrada nas variáveis do Render!');
-} else {
-  console.log('Chave GEMINI_API_KEY carregada com sucesso.');
-}
-
-const genAI = new GoogleGenerativeAI(apiKey);
-
 app.post('/api/consultar', async (req, res) => {
   const { ra, digito, uf, senha } = req.body;
 
   if (!ra || !senha) {
     return res.status(400).json({ erro: 'RA e senha são obrigatórios.' });
+  }
+
+  // Captura e valida a chave DIRETAMENTE no momento em que a requisição chega
+  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+
+  if (!apiKey) {
+    console.error('ERRO: A variável GEMINI_API_KEY está vazia no Render!');
+    return res.status(500).json({ erro: 'Chave de API do Gemini não configurada no servidor.' });
   }
 
   let browser;
@@ -72,8 +69,9 @@ app.post('/api/consultar', async (req, res) => {
     const screenshotBuffer = await page.screenshot({ encoding: 'base64', fullPage: false });
     await browser.close();
 
-    // Processamento com a API do Gemini
+    // Processamento com a API do Gemini instanciando a chave no escopo local
     console.log('5. Analisando dados com Gemini AI...');
+    const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ 
       model: 'gemini-1.5-flash',
       generationConfig: { responseMimeType: 'application/json' }
