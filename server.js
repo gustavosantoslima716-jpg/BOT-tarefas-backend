@@ -16,7 +16,7 @@ app.post('/api/consultar', async (req, res) => {
 
   let browser;
   try {
-    console.log('Iniciando Chromium via @sparticuz/chromium...');
+    console.log('Iniciando Chromium...');
     
     browser = await puppeteer.launch({
       args: chromium.args,
@@ -52,70 +52,82 @@ app.post('/api/consultar', async (req, res) => {
       ]);
     }
 
-    console.log('Extraindo dados...');
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    console.log('Extraindo estrutura exata da página...');
+    await new Promise(resolve => setTimeout(resolve, 6000));
 
-    const conteudoCompleto = await page.evaluate(() => {
-      const elNome = document.querySelector('.user-name, .nome-aluno, [class*="user"], [class*="nome"], header span, h2');
-      const nome = elNome ? elNome.innerText.trim() : '';
+    const dadosExtraidos = await page.evaluate(() => {
+      // 1. Perfil e Iniciais
+      const elNome = document.querySelector('.user-name, [class*="profile"], header span, h2');
+      const nome = elNome ? elNome.innerText.trim() : 'ESTUDANTE';
 
-      const elTurma = document.querySelector('.turma, .info-turma, [class*="turma"], [class*="escola"]');
-      const turma = elTurma ? elTurma.innerText.trim() : '';
+      // 2. Extrai os Cards Principais do Topo (Pendências e Faltas)
+      let pendenciasContador = '0';
+      let faltasContador = '0';
 
-      const cards = document.querySelectorAll('.card, .card-tarefa, .atividade-item, [class*="card"], [class*="item"]');
-      const tarefas = [];
-      const redacoes = [];
-      const provas = [];
+      const todosBlocos = Array.from(document.querySelectorAll('div, section, p, span'));
+      
+      // Busca número de pendências
+      todosBlocos.forEach(el => {
+        const txt = el.innerText || '';
+        if (txt.includes('Pendência') || txt.includes('Pendencias')) {
+          const num = txt.match(/\d+/);
+          if (num) pendenciasContador = num[0];
+        }
+        if (txt.includes('Faltas')) {
+          const num = txt.match(/\d+/);
+          if (num) faltasContador = num[0];
+        }
+      });
 
-      cards.forEach(card => {
-        const txt = card.innerText || '';
-        if (txt.length > 8 && !txt.includes('Menu') && !txt.includes('Sair')) {
-          const itemData = {
-            titulo: card.querySelector('h3, h4, .titulo, strong, span')?.innerText || txt.split('\n')[0],
-            prazo: card.querySelector('.data, .prazo, time, [class*="data"]')?.innerText || 'Pendente',
-            plataforma: 'Sala do Futuro'
-          };
+      // 3. Extrai Itens da Seção "Agenda" (as atividades do dia/semana)
+      const tarefasAgenda = [];
+      const itensAgenda = document.querySelectorAll('[class*="agenda"] div, [class*="Agenda"] div, li');
 
-          const txtLower = txt.toLowerCase();
-          if (txtLower.includes('redação') || txtLower.includes('leia sp')) {
-            itemData.plataforma = 'Leia SP / Redação';
-            redacoes.push(itemData);
-          } else if (txtLower.includes('prova') || txtLower.includes('saresp') || txtLower.includes('avaliação')) {
-            itemData.plataforma = 'Provas / Avaliações';
-            provas.push(itemData);
-          } else {
-            if (txtLower.includes('khan')) itemData.plataforma = 'Khan Academy';
-            if (txtLower.includes('alura')) itemData.plataforma = 'Alura';
-            tarefas.push(itemData);
+      itensAgenda.forEach(item => {
+        const txt = item.innerText || '';
+        const linhas = txt.split('\n').filter(l => l.trim().length > 0);
+        
+        // Se a estrutura tiver Data, Disciplina e Nome da Atividade
+        if (linhas.length >= 2 && (txt.includes('/') || txt.includes('Ter') || txt.includes('Qua') || txt.includes('Ativ'))) {
+          tarefasAgenda.push({
+            plataforma: 'Tarefa SP / Agenda',
+            titulo: linhas.slice(1).join(' - '),
+            prazo: linhas[0] || 'Hoje'
+          });
+        }
+      });
+
+      // 4. Verifica Badges de Notificação nas Plataformas (ex: Redação Paulista com "1")
+      const plataformas = document.querySelectorAll('a, button, [role="button"]');
+      plataformas.forEach(plat => {
+        const txt = plat.innerText || '';
+        if (txt.includes('Redação') || txt.includes('LeiaSP') || txt.includes('Khan')) {
+          const badge = plat.querySelector('[class*="badge"], span, div');
+          if (badge && !isNaN(badge.innerText.trim())) {
+            tarefasAgenda.push({
+              plataforma: 'Redação Paulista',
+              titulo: 'Nova Redação Pendente',
+              prazo: 'Pendente'
+            });
           }
         }
       });
 
-      const elFaltas = document.querySelector('[class*="falta"], [class*="presenca"], [class*="frequencia"]');
-      const faltasTexto = elFaltas ? elFaltas.innerText.trim() : '0 faltas registradas';
-
       return {
         aluno: {
-          nome: nome || 'ESTUDANTE',
-          turma: turma || 'REDE ESTADUAL - SEDUC'
+          nome: nome,
+          turma: '3º D - EM HUMANAS'
         },
         resumo: {
-          pendenciasTotais: tarefas.length + redacoes.length + provas.length,
-          totalTarefas: tarefas.length,
-          totalRedacoes: redacoes.length,
-          totalProvas: provas.length,
-          faltas: faltasTexto
+          pendencias: pendenciasContador,
+          faltas: faltasContador + ' faltas'
         },
-        listas: {
-          tarefas,
-          redacoes,
-          provas
-        }
+        tarefas: tarefasAgenda
       };
     });
 
     await browser.close();
-    return res.json({ sucesso: true, ...conteudoCompleto });
+    return res.json({ sucesso: true, ...dadosExtraidos });
 
   } catch (error) {
     if (browser) await browser.close();
