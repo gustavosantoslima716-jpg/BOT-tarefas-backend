@@ -22,6 +22,7 @@ app.post('/api/consultar', async (req, res) => {
     });
 
     const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 800 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
 
     console.log('Acessando Sala do Futuro...');
@@ -30,7 +31,7 @@ app.post('/api/consultar', async (req, res) => {
       timeout: 60000
     });
 
-    // Preenche login
+    // 1. Preenche Login
     await page.waitForSelector('input', { timeout: 15000 });
     const inputs = await page.$$('input');
     if (inputs.length >= 2) {
@@ -46,45 +47,74 @@ app.post('/api/consultar', async (req, res) => {
       ]);
     }
 
-    console.log('Extraindo informações do aluno e resumo...');
-    await page.waitForTimeout(3000);
+    console.log('Extraindo todo o conteúdo do portal...');
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
-    // Extrai dados da dashboard
-    const dadosDashboard = await page.evaluate(() => {
-      // Tenta extrair o nome do aluno da página
-      const elementoNome = document.querySelector('.nome-aluno, .user-name, [class*="aluno"], [class*="user"], h2, h3');
-      const nomeCompleto = elementoNome ? elementoNome.innerText.trim() : 'ALUNO';
+    // 2. Extrator Geral de Dados do Portal
+    const conteudoCompleto = await page.evaluate(() => {
+      // Nome e Informações
+      const elNome = document.querySelector('.user-name, .nome-aluno, [class*="user"], [class*="nome"], header span, h2');
+      const nome = elNome ? elNome.innerText.trim() : '';
 
-      // Tenta extrair a série / escola
-      const elementoInfo = document.querySelector('.info-turma, .subtitulo, [class*="turma"], [class*="escola"]');
-      const turmaInfo = elementoInfo ? elementoInfo.innerText.trim() : 'SEDUC-SP';
+      const elTurma = document.querySelector('.turma, .info-turma, [class*="turma"], [class*="escola"]');
+      const turma = elTurma ? elTurma.innerText.trim() : '';
 
-      // Conta o total de atividades pendentes
-      const cardsTarefas = document.querySelectorAll('.card-tarefa, .atividade-item, [class*="tarefa"]');
-      const totalPendencias = cardsTarefas.length;
+      // Raspa todos os cards disponíveis no painel
+      const cards = document.querySelectorAll('.card, .card-tarefa, .atividade-item, [class*="card"], [class*="item"]');
+      const tarefas = [];
+      const redacoes = [];
+      const provas = [];
 
-      // Lista detalhada dos itens
-      const tarefas = Array.from(cardsTarefas).map(item => ({
-        plataforma: item.innerText.toLowerCase().includes('khan') ? 'Khan Academy' : 'Tarefas SP',
-        titulo: item.querySelector('h3, h4, .titulo, span')?.innerText || 'Atividade Pendente',
-        prazo: item.querySelector('.data, .prazo, time')?.innerText || 'Pendente'
-      }));
+      cards.forEach(card => {
+        const txt = card.innerText || '';
+        if (txt.length > 8 && !txt.includes('Menu') && !txt.includes('Sair')) {
+          const itemData = {
+            titulo: card.querySelector('h3, h4, .titulo, strong, span')?.innerText || txt.split('\n')[0],
+            prazo: card.querySelector('.data, .prazo, time, [class*="data"]')?.innerText || 'Pendente',
+            plataforma: 'Sala do Futuro'
+          };
+
+          const txtLower = txt.toLowerCase();
+          if (txtLower.includes('redação') || txtLower.includes('leia sp')) {
+            itemData.plataforma = 'Leia SP / Redação';
+            redacoes.push(itemData);
+          } else if (txtLower.includes('prova') || txtLower.includes('saresp') || txtLower.includes('avaliação')) {
+            itemData.plataforma = 'Provas / Avaliações';
+            provas.push(itemData);
+          } else {
+            if (txtLower.includes('khan')) itemData.plataforma = 'Khan Academy';
+            if (txtLower.includes('alura')) itemData.plataforma = 'Alura';
+            tarefas.push(itemData);
+          }
+        }
+      });
+
+      // Busca dados de Frequência/Faltas na página
+      const elFaltas = document.querySelector('[class*="falta"], [class*="presenca"], [class*="frequencia"]');
+      const faltasTexto = elFaltas ? elFaltas.innerText.trim() : '0 faltas registradas';
 
       return {
         aluno: {
-          nome: nomeCompleto,
-          turma: turmaInfo
+          nome: nome || 'ESTUDANTE',
+          turma: turma || 'REDE ESTADUAL - SEDUC'
         },
         resumo: {
-          pendencias: totalPendencias,
-          faltas: '—'
+          pendenciasTotais: tarefas.length + redacoes.length + provas.length,
+          totalTarefas: tarefas.length,
+          totalRedacoes: redacoes.length,
+          totalProvas: provas.length,
+          faltas: faltasTexto
         },
-        tarefas: tarefas
+        listas: {
+          tarefas,
+          redacoes,
+          provas
+        }
       };
     });
 
     await browser.close();
-    return res.json({ sucesso: true, ...dadosDashboard });
+    return res.json({ sucesso: true, ...conteudoCompleto });
 
   } catch (error) {
     if (browser) await browser.close();
@@ -95,4 +125,3 @@ app.post('/api/consultar', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
-          
