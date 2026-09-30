@@ -1,5 +1,6 @@
 const express = require('express');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
+const chromium = require('@sparticuz/chromium');
 const cors = require('cors');
 
 const app = express();
@@ -15,10 +16,14 @@ app.post('/api/consultar', async (req, res) => {
 
   let browser;
   try {
-    console.log('Iniciando Chromium...');
+    console.log('Iniciando Chromium via @sparticuz/chromium...');
+    
     browser = await puppeteer.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
+      ignoreHTTPSErrors: true,
     });
 
     const page = await browser.newPage();
@@ -47,19 +52,16 @@ app.post('/api/consultar', async (req, res) => {
       ]);
     }
 
-    console.log('Extraindo todo o conteúdo do portal...');
+    console.log('Extraindo dados...');
     await new Promise(resolve => setTimeout(resolve, 5000));
 
-    // 2. Extrator Geral de Dados do Portal
     const conteudoCompleto = await page.evaluate(() => {
-      // Nome e Informações
       const elNome = document.querySelector('.user-name, .nome-aluno, [class*="user"], [class*="nome"], header span, h2');
       const nome = elNome ? elNome.innerText.trim() : '';
 
       const elTurma = document.querySelector('.turma, .info-turma, [class*="turma"], [class*="escola"]');
       const turma = elTurma ? elTurma.innerText.trim() : '';
 
-      // Raspa todos os cards disponíveis no painel
       const cards = document.querySelectorAll('.card, .card-tarefa, .atividade-item, [class*="card"], [class*="item"]');
       const tarefas = [];
       const redacoes = [];
@@ -89,7 +91,6 @@ app.post('/api/consultar', async (req, res) => {
         }
       });
 
-      // Busca dados de Frequência/Faltas na página
       const elFaltas = document.querySelector('[class*="falta"], [class*="presenca"], [class*="frequencia"]');
       const faltasTexto = elFaltas ? elFaltas.innerText.trim() : '0 faltas registradas';
 
