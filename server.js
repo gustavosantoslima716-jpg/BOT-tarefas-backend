@@ -15,7 +15,6 @@ app.post('/api/consultar', async (req, res) => {
   }
 
   let browser = null;
-  const tarefasInterceptadas = [];
 
   try {
     console.log('1. Iniciando navegador...');
@@ -36,46 +35,14 @@ app.post('/api/consultar', async (req, res) => {
 
     const page = await browser.newPage();
 
-    // Define os mesmos headers e User-Agent capturados no seu F12
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36'
     );
 
-    // Intercepta a chamada exata capturada no seu F12 (/api/activities/todo)
-    page.on('response', async (response) => {
-      const url = response.url();
-
-      if (url.includes('/api/activities/todo') || url.includes('activities')) {
-        try {
-          const json = await response.json();
-          const items = Array.isArray(json) ? json : (json.data || json.items || json.activities || json.todo || []);
-
-          if (Array.isArray(items) && items.length > 0) {
-            items.forEach((item) => {
-              const tituloReal = item.title || item.nome || item.name;
-
-              if (tituloReal && !tarefasInterceptadas.some(t => t.id === String(item.id))) {
-                tarefasInterceptadas.push({
-                  id: String(item.id || Math.random()),
-                  plataforma: item.realm ? item.realm.toUpperCase() : 'Tarefa SP',
-                  titulo: tituloReal.trim(),
-                  descricao: item.description || item.learning_goals || 'Sem descrição cadastrada.',
-                  prazo: item.task_expired ? 'Expirado' : 'A Fazer',
-                  linkAcao: 'https://salvaestudante.com/tarefas'
-                });
-              }
-            });
-          }
-        } catch (e) {
-          // Ignora respostas sem JSON
-        }
-      }
-    });
-
-    console.log('2. Acessando salvaestudante.com para Login...');
+    console.log('2. Acessando salvaestudante.com...');
     await page.goto('https://salvaestudante.com', { waitUntil: 'networkidle2', timeout: 30000 });
 
-    console.log('3. Preenchendo campos de login...');
+    console.log('3. Aguardando e preenchendo credenciais...');
     await page.waitForSelector('input', { timeout: 15000 });
 
     await page.evaluate(({ raVal, digitoVal, ufVal, senhaVal }) => {
@@ -108,34 +75,48 @@ app.post('/api/consultar', async (req, res) => {
       if (btn) btn.click();
     }, { raVal: ra, digitoVal: digito, ufVal: uf || 'SP', senhaVal: senha });
 
-    console.log('4. Aguardando login e redirecionamento...');
-    await new Promise(r => setTimeout(r, 4000));
+    console.log('4. Aguardando login ser processado...');
+    await new Promise(r => setTimeout(r, 5000));
 
-    console.log('5. Acessando a URL exata da API obtida no F12...');
-    // Faz o navegador navegar diretamente para a URL da API capturada para forçar o disparo com os cookies de sessão
-    await page.goto('https://salvaestudante.com/api/activities/todo?type=NormalTask&includeDraft=true&includeExpired=true&expiredOnly=false&limit=20&offset=0', {
-      waitUntil: 'networkidle2',
-      timeout: 20000
-    }).catch(() => {});
-
-    await new Promise(r => setTimeout(r, 2000));
+    console.log('5. Disparando fetch autenticado direto no contexto da página...');
+    
+    // Executa a requisição direto dentro da sessão do navegador com os cookies ativos
+    const tarefasCapturadas = await page.evaluate(async () => {
+      try {
+        const urlAPI = 'https://salvaestudante.com/api/activities/todo?type=NormalTask&includeDraft=true&includeExpired=true&expiredOnly=false&limit=20&offset=0';
+        const response = await fetch(urlAPI, { method: 'GET', headers: { 'Accept': 'application/json' } });
+        
+        if (!response.ok) return [];
+        const json = await response.json();
+        
+        const items = Array.isArray(json) ? json : (json.data || json.items || json.activities || json.todo || []);
+        
+        return items.map(item => ({
+          id: String(item.id || Math.random()),
+          plataforma: item.realm ? item.realm.toUpperCase() : 'Tarefa SP',
+          titulo: (item.title || item.nome || item.name || 'Tarefa').trim(),
+          descricao: item.description || item.learning_goals || 'Sem descrição cadastrada.',
+          prazo: item.task_expired ? 'Expirado' : 'A Fazer',
+          linkAcao: 'https://salvaestudante.com/tarefas'
+        }));
+      } catch (err) {
+        return [];
+      }
+    });
 
     await browser.close();
     browser = null;
 
-    console.log(`Finalizado! Capturadas ${tarefasInterceptadas.length} tarefas.`);
-
-    const tarefasUnicas = Array.from(new Set(tarefasInterceptadas.map(t => t.id)))
-      .map(id => tarefasInterceptadas.find(t => t.id === id));
+    console.log(`Finalizado! Capturadas ${tarefasCapturadas.length} tarefas com sucesso.`);
 
     return res.json({
       sucesso: true,
       aluno: { nome: 'Estudante', turma: 'Turma Ativa' },
       resumo: {
-        pendencias: tarefasUnicas.length > 0 ? tarefasUnicas.length.toString() : '0',
+        pendencias: tarefasCapturadas.length > 0 ? tarefasCapturadas.length.toString() : '0',
         faltas: '0 faltas'
       },
-      tarefas: tarefasUnicas.length > 0 ? tarefasUnicas : [
+      tarefas: tarefasCapturadas.length > 0 ? tarefasCapturadas : [
         {
           id: "0",
           plataforma: "Tarefa SP",
