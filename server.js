@@ -15,7 +15,6 @@ app.post('/api/consultar', async (req, res) => {
   }
 
   let browser = null;
-  const tarefasInterceptadas = [];
 
   try {
     console.log('1. Iniciando navegador...');
@@ -36,45 +35,12 @@ app.post('/api/consultar', async (req, res) => {
 
     const page = await browser.newPage();
 
-    // Intercepta e captura todas as respostas JSON enviadas pelas APIs
-    page.on('response', async (response) => {
-      const url = response.url();
-      const contentType = response.headers()['content-type'] || '';
-      
-      if (contentType.includes('application/json')) {
-        try {
-          const json = await response.json();
-          const items = Array.isArray(json) ? json : (json.data || json.items || json.activities || json.todo || []);
-
-          if (Array.isArray(items) && items.length > 0) {
-            items.forEach((item) => {
-              const tituloReal = item.title || item.nome || item.name;
-              if (tituloReal && !tarefasInterceptadas.some(t => t.id === String(item.id))) {
-                tarefasInterceptadas.push({
-                  id: String(item.id || Math.random()),
-                  plataforma: item.realm ? item.realm.toUpperCase() : 'Tarefa SP',
-                  titulo: tituloReal.trim(),
-                  descricao: item.description || item.learning_goals || 'Sem descrição cadastrada.',
-                  prazo: item.task_expired ? 'Expirado' : 'A Fazer',
-                  linkAcao: 'https://salvaestudante.com/tarefas'
-                });
-              }
-            });
-          }
-        } catch (e) {
-          // Ignora respostas sem JSON válido
-        }
-      }
-    });
-
     console.log('2. Acessando salvaestudante.com...');
-    await page.goto('https://salvaestudante.com', { waitUntil: 'networkidle2', timeout: 25000 });
+    await page.goto('https://salvaestudante.com', { waitUntil: 'domcontentloaded', timeout: 25000 });
 
-    console.log('3. Aguardando campos de login carregarem...');
-    // Aguarda obrigatoriamente até encontrar um elemento <input> no DOM
-    await page.waitForSelector('input', { timeout: 10000 });
+    console.log('3. Preenchendo campos de login...');
+    await page.waitForSelector('input', { timeout: 15000 });
 
-    console.log('4. Preenchendo credenciais e autenticando...');
     await page.evaluate(({ raVal, digitoVal, ufVal, senhaVal }) => {
       const inputs = Array.from(document.querySelectorAll('input'));
       const inputRA = inputs.find(i => i.placeholder && i.placeholder.includes('0000')) || inputs[0];
@@ -105,22 +71,61 @@ app.post('/api/consultar', async (req, res) => {
       if (btn) btn.click();
     }, { raVal: ra, digitoVal: digito, ufVal: uf || 'SP', senhaVal: senha });
 
-    // Aguarda o processamento do login
+    console.log('4. Aguardando login ser processado...');
     await new Promise(r => setTimeout(r, 4000));
 
-    console.log('5. Navegando para /tarefas e aguardando interceptação...');
-    await page.goto('https://salvaestudante.com/tarefas', { waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {});
-    
-    // Aguarda as chamadas de API da página responderem
-    await new Promise(r => setTimeout(r, 5000));
+    console.log('5. Indo para /tarefas...');
+    await page.goto('https://salvaestudante.com/tarefas', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+
+    console.log('6. Lendo e extraindo os cards de tarefas da página...');
+    await new Promise(r => setTimeout(r, 4000));
+
+    // Aqui acontece a extração (varredura) direta do DOM/HTML da tela
+    const tarefasExtraidas = await page.evaluate(() => {
+      const lista = [];
+      
+      // Procura por blocos de cards, artigos ou divs principais
+      const cards = Array.from(document.querySelectorAll('div, article, section, li')).filter(el => {
+        const txt = el.innerText || '';
+        // Considera um "card de tarefa" se tiver textos/palavras comuns em tarefas
+        return txt.length > 20 && txt.length < 500 && (
+          txt.toLowerCase().includes('expira') ||
+          txt.toLowerCase().includes('prazo') ||
+          txt.toLowerCase().includes('fazer') ||
+          txt.toLowerCase().includes('tarefa') ||
+          txt.toLowerCase().includes('matemática') ||
+          txt.toLowerCase().includes('português') ||
+          txt.toLowerCase().includes('história')
+        );
+      });
+
+      cards.forEach((card, idx) => {
+        const textoCompleto = card.innerText.trim();
+        const linhas = textoCompleto.split('\n').filter(l => l.trim() !== '');
+
+        if (linhas.length >= 1) {
+          lista.push({
+            id: String(idx + 1),
+            plataforma: 'Tarefa SP',
+            titulo: linhas[0] || 'Tarefa Escolar',
+            descricao: linhas.slice(1).join(' - ') || 'Sem descrição cadastrada.',
+            prazo: textoCompleto.toLowerCase().includes('expir') ? 'Expirado' : 'A Fazer',
+            linkAcao: 'https://salvaestudante.com/tarefas'
+          });
+        }
+      });
+
+      return lista;
+    });
 
     await browser.close();
     browser = null;
 
-    console.log(`Finalizado! Capturadas ${tarefasInterceptadas.length} tarefas.`);
+    // Remove duplicados pelo título
+    const tarefasUnicas = Array.from(new Set(tarefasExtraidas.map(t => t.titulo)))
+      .map(titulo => tarefasExtraidas.find(t => t.titulo === titulo));
 
-    const tarefasUnicas = Array.from(new Set(tarefasInterceptadas.map(t => t.id)))
-      .map(id => tarefasInterceptadas.find(t => t.id === id));
+    console.log(`Finalizado! Encontrados ${tarefasUnicas.length} cards na página.`);
 
     return res.json({
       sucesso: true,
