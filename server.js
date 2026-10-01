@@ -42,55 +42,55 @@ app.post('/api/consultar', async (req, res) => {
     console.log('2. Acessando salvaestudante.com...');
     await page.goto('https://salvaestudante.com', { waitUntil: 'networkidle2', timeout: 30000 });
 
-    console.log('3. Aguardando e preenchendo credenciais...');
+    console.log('3. Aguardando campos de input...');
     await page.waitForSelector('input', { timeout: 15000 });
 
-    await page.evaluate(({ raVal, digitoVal, ufVal, senhaVal }) => {
-      const inputs = Array.from(document.querySelectorAll('input'));
-      const inputRA = inputs.find(i => i.placeholder && i.placeholder.includes('0000')) || inputs[0];
-      const inputDigito = inputs.find(i => i.placeholder === '0') || inputs[1];
-      const inputSenha = inputs.find(i => i.type === 'password' || (i.placeholder && i.placeholder.toLowerCase().includes('senha'))) || inputs[inputs.length - 1];
+    // Preenche as credenciais simulando digitação real do usuário
+    const inputs = await page.$$('input');
+    if (inputs.length >= 2) {
+      await inputs[0].click();
+      await page.keyboard.type(ra, { delay: 50 });
 
-      if (inputRA) {
-        inputRA.value = raVal;
-        inputRA.dispatchEvent(new Event('input', { bubbles: true }));
+      if (inputs.length >= 3 && digito) {
+        await inputs[1].click();
+        await page.keyboard.type(digito, { delay: 50 });
+        await inputs[inputs.length - 1].click();
+        await page.keyboard.type(senha, { delay: 50 });
+      } else {
+        await inputs[inputs.length - 1].click();
+        await page.keyboard.type(senha, { delay: 50 });
       }
-      if (inputDigito) {
-        inputDigito.value = digitoVal || '0';
-        inputDigito.dispatchEvent(new Event('input', { bubbles: true }));
-      }
-      if (inputSenha) {
-        inputSenha.value = senhaVal;
-        inputSenha.dispatchEvent(new Event('input', { bubbles: true }));
-      }
+    }
 
-      const selectUF = document.querySelector('select');
-      if (selectUF && ufVal) {
-        selectUF.value = ufVal.toUpperCase();
-        selectUF.dispatchEvent(new Event('change', { bubbles: true }));
-      }
+    console.log('4. Clicando no botão de Acessar e aguardando navegação...');
+    // Pressiona Enter para submeter o formulário de login
+    await page.keyboard.press('Enter');
 
-      const botoes = Array.from(document.querySelectorAll('button'));
-      const btn = botoes.find(b => b.innerText && b.innerText.trim().toLowerCase().includes('acessar'));
-      if (btn) btn.click();
-    }, { raVal: ra, digitoVal: digito, ufVal: uf || 'SP', senhaVal: senha });
+    // Aguarda o processamento e eventuais redirecionamentos da sessão
+    await new Promise(r => setTimeout(r, 6000));
 
-    console.log('4. Aguardando login ser processado...');
-    await new Promise(r => setTimeout(r, 5000));
+    console.log('5. Verificando URL atual e executando fetch autenticado...');
+    console.log('URL após login:', page.url());
 
-    console.log('5. Disparando fetch autenticado direto no contexto da página...');
-    
-    // Executa a requisição direto dentro da sessão do navegador com os cookies ativos
+    // Tenta primeiro navegar para a rota interna /tarefas caso o login tenha sido concluído
+    await page.goto('https://salvaestudante.com/tarefas', { waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+    await new Promise(r => setTimeout(r, 3000));
+
+    // Faz a chamada ao endpoint de tarefas injetando tokens de autenticação se existirem
     const tarefasCapturadas = await page.evaluate(async () => {
       try {
+        const token = localStorage.getItem('token') || sessionStorage.getItem('token') || '';
+        const headers = { 'Accept': 'application/json' };
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+
         const urlAPI = 'https://salvaestudante.com/api/activities/todo?type=NormalTask&includeDraft=true&includeExpired=true&expiredOnly=false&limit=20&offset=0';
-        const response = await fetch(urlAPI, { method: 'GET', headers: { 'Accept': 'application/json' } });
-        
+        const response = await fetch(urlAPI, { method: 'GET', headers });
+
         if (!response.ok) return [];
         const json = await response.json();
-        
+
         const items = Array.isArray(json) ? json : (json.data || json.items || json.activities || json.todo || []);
-        
+
         return items.map(item => ({
           id: String(item.id || Math.random()),
           plataforma: item.realm ? item.realm.toUpperCase() : 'Tarefa SP',
