@@ -18,7 +18,7 @@ app.post('/api/consultar', async (req, res) => {
   const tarefasInterceptadas = [];
 
   try {
-    console.log('1. Iniciando navegador ultra-rápido...');
+    console.log('1. Iniciando navegador...');
     browser = await puppeteer.launch({
       args: [
         ...chromium.args,
@@ -26,8 +26,7 @@ app.post('/api/consultar', async (req, res) => {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
-        '--single-process',
-        '--no-zygote'
+        '--single-process'
       ],
       defaultViewport: chromium.defaultViewport,
       executablePath: await chromium.executablePath(),
@@ -36,28 +35,18 @@ app.post('/api/consultar', async (req, res) => {
     });
 
     const page = await browser.newPage();
-    
-    // Bloqueia imagens, fontes e CSS para carregar 5x mais rápido
-    await page.setRequestInterception(true);
-    page.on('request', (req) => {
-      const resourceType = req.resourceType();
-      if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-        req.abort();
-      } else {
-        req.continue();
-      }
-    });
 
-    // Intercepta a resposta da API que contém os títulos das tarefas
+    // Intercepta e captura todas as respostas JSON enviadas pelas APIs
     page.on('response', async (response) => {
       const url = response.url();
-      // Pega qualquer chamada de API que traga dados de atividades/tarefas
-      if (url.includes('/api/') || url.includes('/activities') || url.includes('/tasks') || url.includes('edusp')) {
+      const contentType = response.headers()['content-type'] || '';
+      
+      if (contentType.includes('application/json')) {
         try {
           const json = await response.json();
-          const items = Array.isArray(json) ? json : (json.data || json.items || json.activities || []);
+          const items = Array.isArray(json) ? json : (json.data || json.items || json.activities || json.todo || []);
 
-          if (Array.isArray(items)) {
+          if (Array.isArray(items) && items.length > 0) {
             items.forEach((item) => {
               const tituloReal = item.title || item.nome || item.name;
               if (tituloReal && !tarefasInterceptadas.some(t => t.id === String(item.id))) {
@@ -73,70 +62,69 @@ app.post('/api/consultar', async (req, res) => {
             });
           }
         } catch (e) {
-          // Ignora respostas não-JSON
+          // Ignora respostas sem JSON válido
         }
       }
     });
 
     console.log('2. Acessando salvaestudante.com...');
-    await page.goto('https://salvaestudante.com', { waitUntil: 'domcontentloaded', timeout: 15000 });
+    await page.goto('https://salvaestudante.com', { waitUntil: 'networkidle2', timeout: 25000 });
 
-    const temInputs = await page.$('input');
-    if (temInputs) {
-      console.log('3. Preenchendo credenciais e enviando...');
-      await page.evaluate(({ raVal, digitoVal, ufVal, senhaVal }) => {
-        const inputs = Array.from(document.querySelectorAll('input'));
-        const inputRA = inputs.find(i => i.placeholder && i.placeholder.includes('0000')) || inputs[0];
-        const inputDigito = inputs.find(i => i.placeholder === '0') || inputs[1];
-        const inputSenha = inputs.find(i => i.type === 'password' || (i.placeholder && i.placeholder.toLowerCase().includes('senha'))) || inputs[inputs.length - 1];
+    console.log('3. Aguardando campos de login carregarem...');
+    // Aguarda obrigatoriamente até encontrar um elemento <input> no DOM
+    await page.waitForSelector('input', { timeout: 10000 });
 
-        if (inputRA) {
-          inputRA.value = raVal;
-          inputRA.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-        if (inputDigito) {
-          inputDigito.value = digitoVal || '0';
-          inputDigito.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-        if (inputSenha) {
-          inputSenha.value = senhaVal;
-          inputSenha.dispatchEvent(new Event('input', { bubbles: true }));
-        }
+    console.log('4. Preenchendo credenciais e autenticando...');
+    await page.evaluate(({ raVal, digitoVal, ufVal, senhaVal }) => {
+      const inputs = Array.from(document.querySelectorAll('input'));
+      const inputRA = inputs.find(i => i.placeholder && i.placeholder.includes('0000')) || inputs[0];
+      const inputDigito = inputs.find(i => i.placeholder === '0') || inputs[1];
+      const inputSenha = inputs.find(i => i.type === 'password' || (i.placeholder && i.placeholder.toLowerCase().includes('senha'))) || inputs[inputs.length - 1];
 
-        const selectUF = document.querySelector('select');
-        if (selectUF && ufVal) {
-          selectUF.value = ufVal.toUpperCase();
-          selectUF.dispatchEvent(new Event('change', { bubbles: true }));
-        }
+      if (inputRA) {
+        inputRA.value = raVal;
+        inputRA.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      if (inputDigito) {
+        inputDigito.value = digitoVal || '0';
+        inputDigito.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      if (inputSenha) {
+        inputSenha.value = senhaVal;
+        inputSenha.dispatchEvent(new Event('input', { bubbles: true }));
+      }
 
-        const botoes = Array.from(document.querySelectorAll('button'));
-        const btn = botoes.find(b => b.innerText && b.innerText.trim().toLowerCase().includes('acessar'));
-        if (btn) btn.click();
-      }, { raVal: ra, digitoVal: digito, ufVal: uf || 'SP', senhaVal: senha });
+      const selectUF = document.querySelector('select');
+      if (selectUF && ufVal) {
+        selectUF.value = ufVal.toUpperCase();
+        selectUF.dispatchEvent(new Event('change', { bubbles: true }));
+      }
 
-      await new Promise(r => setTimeout(r, 3000));
-    }
+      const botoes = Array.from(document.querySelectorAll('button'));
+      const btn = botoes.find(b => b.innerText && b.innerText.trim().toLowerCase().includes('acessar'));
+      if (btn) btn.click();
+    }, { raVal: ra, digitoVal: digito, ufVal: uf || 'SP', senhaVal: senha });
 
-    console.log('4. Navegando direto para /tarefas...');
-    await page.goto('https://salvaestudante.com/tarefas', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+    // Aguarda o processamento do login
+    await new Promise(r => setTimeout(r, 4000));
+
+    console.log('5. Navegando para /tarefas e aguardando interceptação...');
+    await page.goto('https://salvaestudante.com/tarefas', { waitUntil: 'networkidle2', timeout: 20000 }).catch(() => {});
     
-    // Aguarda apenas 3 segundos para que as chamadas de API aconteçam
-    await new Promise(r => setTimeout(r, 3000));
+    // Aguarda as chamadas de API da página responderem
+    await new Promise(r => setTimeout(r, 5000));
 
     await browser.close();
     browser = null;
 
     console.log(`Finalizado! Capturadas ${tarefasInterceptadas.length} tarefas.`);
 
-    const tarefasUnicas = Array.from(new Set(tarefasInterceptadas.map(t => t.titulo)))
-      .map(titulo => tarefasInterceptadas.find(t => t.titulo === titulo));
+    const tarefasUnicas = Array.from(new Set(tarefasInterceptadas.map(t => t.id)))
+      .map(id => tarefasInterceptadas.find(t => t.id === id));
 
     return res.json({
       sucesso: true,
-      aluno: {
-        nome: 'Estudante',
-        turma: 'Turma Ativa'
-      },
+      aluno: { nome: 'Estudante', turma: 'Turma Ativa' },
       resumo: {
         pendencias: tarefasUnicas.length > 0 ? tarefasUnicas.length.toString() : '0',
         faltas: '0 faltas'
